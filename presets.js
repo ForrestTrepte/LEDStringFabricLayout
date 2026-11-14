@@ -34,8 +34,23 @@ window.ledLayoutPresets = [
       "width": "5.75",
       "gap": ".25",
       "count": "20",
-      "offset": "0",
+      "offset": ".8",
       "turn": "diagonal",
+      "labels": false,
+      "wire": true,
+      "grid": true
+    }
+  },
+  {
+    "name": "Diagonal 2",
+    "settings": {
+      "pitch": "4",
+      "width": "5.75",
+      "gap": ".25",
+      "count": "20",
+      "offset": "0.8",
+      "turn": "diagonal",
+      "diagonalLead": ".04",
       "labels": false,
       "wire": true,
       "grid": true

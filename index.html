@@ -144,6 +144,15 @@
           <option value="round">Rounded U-turns</option>
           <option value="diagonal">Diagonal LED-to-LED</option>
         </select></label>
+      <div id="diagonal-lead-control" hidden>
+        <label>Diagonal lead-in (in) <input name="diagonalLead" type="number" min="0" step="any" value="0" required disabled></label>
+        <label><input name="adjustLead" type="checkbox"> Adjust lead-in to fit</label>
+        <label><input name="reverseLead" type="checkbox"> Try lead-in in either direction</label>
+        <label><input name="skipRows" type="checkbox"> Skip rows if needed</label>
+        <label><input name="reduceGap" type="checkbox"> Reduce row spacing if needed</label>
+        <label><input name="extraBend" type="checkbox"> Allow extra bends</label>
+        <label><input name="retryRoute" type="checkbox"> Revisit earlier placement choices</label>
+      </div>
       <p>Rounded turns extend half the row spacing beyond each straight row end where the wire turns.</p>
       <label><input name="labels" type="checkbox"> LED numbers</label>
       <label><input name="wire" type="checkbox" checked> Wire path</label>
@@ -175,7 +184,9 @@
   const presetName = document.querySelector('#preset-name');
   const presetStatus = document.querySelector('#preset-status');
   const presets = new Map((window.ledLayoutPresets ?? []).map(preset => [preset.name, preset.settings]));
-  const presetFields = ['pitch', 'width', 'gap', 'count', 'offset', 'turn', 'labels', 'wire', 'grid'];
+  const diagonalLeadControl = document.querySelector('#diagonal-lead-control');
+  const continuationFields = ['adjustLead', 'reverseLead', 'skipRows', 'reduceGap', 'extraBend', 'retryRoute'];
+  const presetFields = ['pitch', 'width', 'gap', 'count', 'offset', 'turn', 'diagonalLead', ...continuationFields, 'labels', 'wire', 'grid'];
   const svgNS = 'http://www.w3.org/2000/svg';
   const inches = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
 
@@ -232,46 +243,187 @@
     return { path, pointAt, left, right, bottom };
   }
 
-  function diagonalLayout(width, gap, pitch, offset, count) {
-    let x = offset;
-    let row = 0;
-    let direction = 1;
-    let right = x;
-    const positions = [[x, 0]];
-    const path = [`M 0 0 H ${x}`];
-    const gapRatio = gap / pitch;
-    const reach = pitch * Math.sqrt((1 - gapRatio) * (1 + gapRatio));
+  function diagonalLayout(width, gap, pitch, offset, count, lead, options = {}) {
     const tolerance = Math.min(pitch, width) * Number.EPSILON * 8;
-    const fits = position => position >= -tolerance && position <= width + tolerance;
+    const fits = x => x >= -tolerance && x <= width + tolerance;
+    const clampX = x => Math.max(0, Math.min(width, x));
 
-    for (let index = 1; index < count; index++) {
-      let nextX = x + direction * pitch;
-      if (!fits(nextX)) {
-        if (gap > pitch) break;
-        // Prefer crossing toward the opposite edge when both landings fit.
-        nextX = x - direction * reach;
-        if (!fits(nextX)) nextX = x + direction * reach;
-        if (!fits(nextX)) break;
-        row++;
-        const roomToLeft = nextX;
-        const roomToRight = width - nextX;
-        if (Math.abs(roomToRight - roomToLeft) <= tolerance) direction = -direction;
-        else direction = roomToRight > roomToLeft ? 1 : -1;
+    function* landings(x, sign, drop, adjustable) {
+      const maxLead = Math.min(sign > 0 ? width - x : x, pitch - drop);
+      if (maxLead < 0) return;
+      let lengths = [lead];
+      if (adjustable) {
+        const closest = Math.min(lead, maxLead);
+        lengths = [closest, 0, maxLead];
+        // A landing can enter or leave the fabric only at an edge.
+        for (const edge of [0, width]) {
+          const horizontal = sign * (edge - x);
+          const slack = pitch - horizontal;
+          if (slack > 0) lengths.push((pitch + horizontal - drop * (drop / slack)) / 2);
+        }
+        lengths = [...new Set(lengths)].sort((a, b) => Math.abs(a - lead) - Math.abs(b - lead));
       }
-      x = Math.max(0, Math.min(width, nextX));
-      const y = row * gap;
-      right = Math.max(right, x);
-      positions.push([x, y]);
-      path.push(`L ${x} ${y}`);
+
+      for (const length of lengths) {
+        if (length < -tolerance || length > maxLead + tolerance) continue;
+        const bend = clampX(x + sign * Math.max(0, Math.min(length, maxLead)));
+        const remaining = pitch - Math.abs(bend - x);
+        const ratio = Math.min(1, drop / remaining);
+        const reach = remaining * Math.sqrt((1 - ratio) * (1 + ratio));
+        for (const nextX of new Set([bend - sign * reach, bend + sign * reach])) {
+          if (fits(nextX)) yield { x: clampX(nextX), drop, bends: bend === x ? [] : [[bend, 0]] };
+        }
+      }
     }
 
-    return { path: path.join(' '), positions, left: 0, right, bottom: row * gap };
+    function* turns(x, direction) {
+      let fallback = false;
+      for (const turn of landings(x, direction, gap, false)) {
+        yield { ...turn, fallback };
+        fallback = true;
+      }
+      const signs = options.reverseLead ? [direction, -direction] : [direction];
+      if (options.reverseLead) yield* landings(x, -direction, gap, false);
+      if (options.adjustLead) {
+        const adjusted = signs.map(sign => landings(x, sign, gap, true).next().value).filter(Boolean);
+        adjusted.sort((a, b) => Math.abs(Math.abs((a.bends[0]?.[0] ?? x) - x) - lead)
+          - Math.abs(Math.abs((b.bends[0]?.[0] ?? x) - x) - lead));
+        yield* adjusted;
+        if (options.retryRoute) {
+          for (const sign of signs) yield* landings(x, sign, gap, true);
+        }
+      }
+      if (options.reduceGap) {
+        for (const sign of signs) {
+          const room = sign > 0 ? width - x : x;
+          const length = options.adjustLead ? Math.min(lead, room, pitch - Math.min(pitch, gap) / 2) : lead;
+          const drop = pitch - length;
+          if (length <= room && drop > 0 && drop < gap) {
+            const nextX = clampX(x + sign * length);
+            yield { x: nextX, drop, bends: length ? [[nextX, 0]] : [] };
+          }
+        }
+      }
+      if (options.skipRows) {
+        // With more vertical drop, a landing moves closer to its in-bounds bend.
+        let low = 2;
+        const available = options.adjustLead ? pitch : pitch - lead;
+        let high = Math.min(Math.floor(available / gap), Number.MAX_SAFE_INTEGER);
+        if (high >= low) {
+          const atRow = row => signs.flatMap(sign => [...landings(x, sign, row * gap, options.adjustLead)]);
+          if (atRow(high).length) {
+            while (low < high) {
+              const middle = low + Math.floor((high - low) / 2);
+              if (atRow(middle).length) high = middle;
+              else low = middle + 1;
+            }
+            yield* atRow(low);
+          }
+        }
+      }
+      if (options.extraBend) {
+        for (const sign of signs) {
+          const room = sign > 0 ? width - x : x;
+          const maxLead = Math.min(room, pitch - gap);
+          if (maxLead < 0 || (!options.adjustLead && lead > maxLead)) continue;
+          const length = Math.min(lead, maxLead);
+          let bendX = clampX(x + sign * length);
+          let horizontal = pitch - gap - length;
+          const legs = Math.ceil(horizontal / width) + 1;
+          if (legs > 256) continue;
+          const bends = length ? [[bendX, 0]] : [];
+          for (let leg = 1; leg <= legs && horizontal > tolerance; leg++) {
+            const y = gap * (leg / (legs + 1));
+            const side = bendX < width / 2 ? 1 : -1;
+            const distance = Math.min(horizontal, side > 0 ? width - bendX : bendX);
+            bends.push([bendX, y]);
+            bendX = clampX(bendX + side * distance);
+            bends.push([bendX, y]);
+            horizontal -= distance;
+          }
+          yield { x: bendX, drop: gap, bends };
+        }
+      }
+    }
+
+    function* nextSteps({ x, direction, drop }) {
+      const straight = x + direction * pitch;
+      if (fits(straight)) yield { x: clampX(straight), drop: 0, direction, bends: [] };
+      if (!fits(straight) || options.retryRoute) {
+        for (const turn of turns(x, direction)) {
+          const roomDifference = width - 2 * turn.x;
+          yield {
+            ...turn,
+            fallback: fits(straight) || turn.fallback !== false,
+            direction: Math.abs(roomDifference) <= tolerance ? -direction : Math.sign(roomDifference)
+          };
+        }
+      }
+      const reverse = x - direction * pitch;
+      if (options.retryRoute && drop > 0 && fits(reverse)) {
+        yield { x: clampX(reverse), drop: 0, direction: -direction, bends: [], fallback: true };
+      }
+    }
+
+    const route = [{ x: offset, y: 0, direction: 1, bends: [] }];
+    const choices = [nextSteps(route[0])];
+    let longest = route.slice();
+    let retries = 0;
+    while (route.length < count) {
+      const step = choices.at(-1).next().value;
+      if (step) {
+        step.y = route.at(-1).y + step.drop;
+        route.push(step);
+        choices.push(nextSteps(step));
+      } else {
+        if (route.length > longest.length) longest = route.slice();
+        if (!options.retryRoute || route.length === 1 || retries++ >= 10000) break;
+        route.pop();
+        choices.pop();
+      }
+    }
+
+    const placed = route.length >= longest.length ? route : longest;
+    const positions = placed.map(({ x, y }) => [x, y]);
+    const path = [`M 0 0 H ${offset}`];
+    const fallbackPath = [];
+    let right = offset;
+    for (let index = 1; index < placed.length; index++) {
+      const { x, y, bends, fallback } = placed[index];
+      const previous = placed[index - 1];
+      const segment = [];
+      for (const [bendX, drop] of bends) {
+        segment.push(`L ${bendX} ${previous.y + drop}`);
+        right = Math.max(right, bendX);
+      }
+      segment.push(`L ${x} ${y}`);
+      path.push(...segment);
+      if (fallback) fallbackPath.push(`M ${previous.x} ${previous.y}`, ...segment);
+      right = Math.max(right, x);
+    }
+    let stopReason;
+    if (placed.length < count) {
+      const { x, direction } = placed.at(-1);
+      if (retries > 10000) stopReason = 'The search reached its retry limit.';
+      else if (!fits(x + direction * lead) && !options.adjustLead && !options.reverseLead) {
+        stopReason = 'The diagonal lead-in extends past the fabric edge.';
+      } else if (pitch - lead < gap && !options.adjustLead) {
+        stopReason = 'Too little wire remains after the lead-in to reach the next row.';
+      }
+    }
+    return {
+      path: path.join(' '), fallbackPath: fallbackPath.join(' '), positions,
+      left: 0, right, bottom: placed.at(-1).y, stopReason
+    };
   }
 
   function render() {
     preview.replaceChildren();
     download.disabled = true;
     const input = controls.elements;
+    const diagonal = input.turn.value === 'diagonal';
+    diagonalLeadControl.hidden = !diagonal;
+    input.diagonalLead.disabled = !diagonal;
     if (!controls.checkValidity()) {
       summary.textContent = 'Enter valid dimensions and a whole LED count between 1 and 20,000.';
       return;
@@ -282,27 +434,28 @@
     const width = input.width.valueAsNumber;
     const gap = input.gap.valueAsNumber;
     const turn = input.turn.value;
-    const diagonal = turn === 'diagonal';
     if (diagonal && offset > width) {
       summary.textContent = 'For diagonal turns, the first LED offset must fit within the first row.';
       return;
     }
     const requestedLength = offset + (count - 1) * pitch;
+    const continuation = Object.fromEntries(continuationFields.map(field => [field, input[field].checked]));
     const geometry = Number.isFinite(requestedLength) && (diagonal
-      ? diagonalLayout(width, gap, pitch, offset, count)
+      ? diagonalLayout(width, gap, pitch, offset, count, input.diagonalLead.valueAsNumber, continuation)
       : layout(width, gap, requestedLength, turn === 'round'));
     if (!geometry) {
       summary.textContent = 'The wire path is too long to draw. Reduce the LED count, spacing, or first LED offset.';
       return;
     }
-    const { path, pointAt, positions, left, right, bottom } = geometry;
+    const { path, fallbackPath, pointAt, positions, left, right, bottom, stopReason } = geometry;
     const placed = positions?.length ?? count;
     const length = offset + (placed - 1) * pitch;
-    const span = Math.max(right - left, bottom, .05);
+    const previewRight = Math.max(right, width);
+    const span = Math.max(previewRight - left, bottom, .05);
     const padding = Math.max(span * .06, .05);
     const x = left - padding;
     const y = -padding;
-    const w = right - left + 2 * padding;
+    const w = previewRight - left + 2 * padding;
     const h = bottom + 2 * padding;
     const dot = Math.min(pitch * .18, input.gap.valueAsNumber * .2, span * .011);
     const fontSize = span * .018;
@@ -319,8 +472,17 @@
         add(grid, 'line', { x1: x, y1: i * gridStep, x2: x + w, y2: i * gridStep });
       }
     }
+    for (const edge of [0, width]) {
+      add(preview, 'line', {
+        x1: edge, x2: edge, y1: y, y2: y + h,
+        stroke: '#d8ad70', 'stroke-width': 1.5, 'stroke-dasharray': '5 4',
+        'vector-effect': 'non-scaling-stroke'
+      });
+    }
     if (input.wire.checked) {
-      add(preview, 'path', { d: path, fill: 'none', stroke: '#78a3b4', 'stroke-width': span * .0025, 'stroke-linejoin': 'round' });
+      const wireStyle = { fill: 'none', 'stroke-width': span * .0025, 'stroke-linejoin': 'round' };
+      add(preview, 'path', { ...wireStyle, d: path, stroke: '#78a3b4' });
+      if (fallbackPath) add(preview, 'path', { ...wireStyle, d: fallbackPath, stroke: '#ffe066' });
     }
     const leds = add(preview, 'g', { fill: '#9ff3df' });
     const labels = input.labels.checked && add(preview, 'g', {
@@ -328,13 +490,14 @@
     });
     for (let index = 0; index < placed; index++) {
       const [cx, cy] = positions ? positions[index] : pointAt(offset + index * pitch);
-      add(leds, 'circle', { cx, cy, r: dot });
+      const stoppedHere = placed < count && index === placed - 1;
+      add(leds, 'circle', { cx, cy, r: dot, ...(stoppedHere ? { fill: '#ff6464' } : {}) });
       if (labels) add(labels, 'text', { x: cx, y: cy - dot - fontSize * .25 }).textContent = index + 1;
     }
     summary.textContent = [
       placed === count
         ? `${count.toLocaleString('en-US')} LEDs`
-        : `${placed.toLocaleString('en-US')} of ${count.toLocaleString('en-US')} LEDs placed. The next row is out of reach at this LED spacing.`,
+        : `${placed.toLocaleString('en-US')} of ${count.toLocaleString('en-US')} LEDs placed. ${stopReason ?? 'The next row is out of reach with these settings.'}`,
       `${inches.format(length / 12)} ft of wire`,
       `${inches.format(right - left)} × ${inches.format(bottom)} in wire footprint`,
       ...(input.grid.checked ? [`${gridStep} in grid`] : [])
@@ -352,8 +515,8 @@
     const settings = presets.get(name);
     for (const field of presetFields) {
       const control = controls.elements[field];
-      if (control.type === 'checkbox') control.checked = settings[field];
-      else control.value = settings[field];
+      if (control.type === 'checkbox') control.checked = settings[field] ?? false;
+      else control.value = field === 'diagonalLead' ? settings[field] ?? '0' : settings[field];
     }
     presetName.value = name;
   }

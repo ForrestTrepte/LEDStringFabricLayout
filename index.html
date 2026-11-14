@@ -29,7 +29,7 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 250px minmax(0, 1fr) 260px;
+    grid-template-columns: 250px minmax(0, 1fr) 320px;
     gap: 18px;
     align-items: start
   }
@@ -237,7 +237,17 @@
     }
   }
 
-  @media (max-width: 950px) {
+  .optimize-weights { display: grid; gap: 4px }
+  .optimize-weights label {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 4.5rem;
+    align-items: center;
+    gap: 8px;
+    font-size: .85rem
+  }
+  .optimize-weights input[type=number] { margin: 0; padding: 3px 6px }
+
+  @media (max-width: 1010px) {
     .layout {
       grid-template-columns: 250px minmax(0, 1fr)
     }
@@ -329,16 +339,19 @@
         <p id="preset-status" role="status">Save the downloaded presets.js beside index.html to keep your presets.</p>
       </section>
       <form id="optimize-controls" aria-labelledby="optimize-heading">
-        <h2 id="optimize-heading">Optimize<br />Scattered Coverage</h2>
+        <h2 id="optimize-heading">Optimize Scattered Coverage</h2>
         <label>Number of samples <input name="samples" type="number" min="1" max="9007199254740991" step="1"
             value="1000000" required></label>
-        <p>Tries different combinations of placement options. Uses the current LED specs, fabric, and turn mode to
-          optimize coverage while avoiding lines.</p>
+        <div class="optimize-weights">
+          <label>Coverage weight <input name="coverageWeight" type="number" min="0" step="any" value="1" required></label>
+          <label>Alignment penalty weight <input name="alignmentWeight" type="number" min="0" step="any" value="1" required></label>
+          <label>Close-pair penalty weight <input name="proximityWeight" type="number" min="0" step="any" value="1" required></label>
+        </div>
+        <p>Set a weight to 0 to ignore that term. Uses the current LED specs, fabric, and turn mode.</p>
         <button type="submit">Run optimization</button>
         <button id="optimize-cancel" type="button" disabled>Cancel</button>
         <progress id="optimize-progress" aria-label="Optimization progress" max="1" value="0"></progress>
         <p id="optimize-status" role="status"></p>
-        <button id="optimize-preview" type="button" disabled>Preview best layout</button>
         <button id="optimize-apply" type="button" disabled>Apply best layout</button>
       </form>
     </div>
@@ -836,7 +849,7 @@
     };
   }
 
-  function searchLayouts(initial, fabricWidth, fabricHeight, limit) {
+  function searchLayouts(initial, fabricWidth, fabricHeight, limit, weights) {
     const scale = Math.max(fabricWidth, fabricHeight);
     const samples = [];
     for (let row = 0; row < 12; row++) {
@@ -909,8 +922,11 @@
           worstPair = Math.max(worstPair, shortfall);
         }
       }
-      return total / samples.length + .45 * Math.sqrt(worst) + .48 * linePenalty
-        + .24 * aligned / Math.max(1, triples) + .25 * (worstPair ** 2 + crowding / count);
+      return {
+        coverage: total / samples.length + .45 * Math.sqrt(worst),
+        alignment: .48 * linePenalty + .24 * aligned / Math.max(1, triples),
+        proximity: .25 * (worstPair ** 2 + crowding / count)
+      };
     }
 
     function evaluate(candidate) {
@@ -927,8 +943,9 @@
       if (positions.length !== count) return;
       fits++;
       const [dx, dy] = fabricOffset(geometry, fabricWidth, fabricHeight);
-      const cost = score(positions.map(([x, y]) => [x + dx, y + dy]));
-      const result = { candidate, cost };
+      const components = score(positions.map(([x, y]) => [x + dx, y + dy]));
+      const cost = Object.keys(components).reduce((sum, term) => sum + weights[term] * components[term], 0);
+      const result = { candidate, cost, components };
       if (!best || cost < best.cost) best = result;
       return result;
     }
@@ -1005,7 +1022,6 @@
   const optimizeStatus = document.querySelector('#optimize-status');
   const optimizeProgress = document.querySelector('#optimize-progress');
   const cancelOptimization = document.querySelector('#optimize-cancel');
-  const previewOptimization = document.querySelector('#optimize-preview');
   const applyOptimization = document.querySelector('#optimize-apply');
   const runOptimization = optimize.querySelector('button[type="submit"]');
   let worker;
@@ -1022,7 +1038,6 @@
   function clearOptimization() {
     stopOptimization();
     bestLayout = undefined;
-    previewOptimization.disabled = true;
     applyOptimization.disabled = true;
     optimizeProgress.value = 0;
     optimizeStatus.textContent = '';
@@ -1030,9 +1045,10 @@
   }
 
   function toggleBestPreview(show) {
-    showingBest = show;
-    previewOptimization.textContent = show ? 'Return to current layout' : 'Preview best layout';
-    render(show ? bestLayout : undefined);
+    const next = show && Boolean(bestLayout);
+    if (showingBest === next) return;
+    showingBest = next;
+    render(next ? bestLayout : undefined);
   }
 
   optimize.addEventListener('submit', event => {
@@ -1043,6 +1059,12 @@
     const initial = readLayout();
     const dimensions = [input.fabricWidth.valueAsNumber, input.fabricHeight.valueAsNumber];
     const samples = optimize.elements.samples.valueAsNumber;
+    const weights = Object.fromEntries(['coverage', 'alignment', 'proximity']
+      .map(term => [term, optimize.elements[term + 'Weight'].valueAsNumber]));
+    if (Object.values(weights).every(weight => weight === 0)) {
+      optimizeStatus.textContent = 'Set at least one weight above zero.';
+      return;
+    }
     const source = `${layout.toString()}\n${diagonalLayout.toString()}\n${fabricOffset.toString()}\n${searchLayouts.toString()}\n`
       + 'onmessage = ({ data }) => searchLayouts(...data);';
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
@@ -1062,12 +1084,13 @@
       optimizeProgress.value = progress;
       if (best) {
         bestLayout = best.candidate;
-        previewOptimization.disabled = false;
         applyOptimization.disabled = false;
         if (showingBest) render(bestLayout);
       }
       const results = `${checked.toLocaleString()} of ${samples.toLocaleString()} tried · ${fits.toLocaleString()} fit`;
-      optimizeStatus.textContent = best ? `${results} · Best cost ${best.cost.toFixed(3)} (lower is better)`
+      const breakdown = best && Object.entries({ coverage: 'Coverage', alignment: 'Alignment', proximity: 'Close pairs' })
+        .map(([term, label]) => `${label} ${best.components[term].toFixed(3)} × ${weights[term]}`).join(' · ');
+      optimizeStatus.textContent = best ? `${results} · Best cost ${best.cost.toFixed(3)} (lower is better) · ${breakdown}`
         : `${results}${done ? ' · No complete layout found.' : ''}`;
       if (done) stopOptimization();
     };
@@ -1075,21 +1098,25 @@
       stopOptimization();
       optimizeStatus.textContent = 'The background search stopped unexpectedly.';
     };
-    worker.postMessage([initial, ...dimensions, samples]);
+    worker.postMessage([initial, ...dimensions, samples, weights]);
   });
 
   cancelOptimization.addEventListener('click', () => {
     stopOptimization();
     optimizeStatus.textContent += ' · Search canceled.';
   });
-  previewOptimization.addEventListener('click', () => toggleBestPreview(!showingBest));
+  applyOptimization.addEventListener('mouseenter', () => toggleBestPreview(true));
+  applyOptimization.addEventListener('mouseleave', () => toggleBestPreview(applyOptimization.matches(':focus-visible')));
+  applyOptimization.addEventListener('focus', () => {
+    if (applyOptimization.matches(':focus-visible')) toggleBestPreview(true);
+  });
+  applyOptimization.addEventListener('blur', () => toggleBestPreview(applyOptimization.matches(':hover')));
   applyOptimization.addEventListener('click', () => {
     const input = controls.elements;
     for (const field of ['width', 'gap', 'offset', 'diagonalLead']) input[field].value = bestLayout[field];
     for (const field of continuationFields) input[field].checked = bestLayout.continuation[field] ?? false;
     presetList.value = '';
     showingBest = false;
-    previewOptimization.textContent = 'Preview best layout';
     render();
   });
   optimize.addEventListener('input', clearOptimization);
@@ -1154,7 +1181,7 @@
     downloadFile(new XMLSerializer().serializeToString(svg), 'image/svg+xml', 'led-fabric-layout.svg');
   });
   const firstPreset = presets.keys().next().value;
-  for (const input of document.querySelectorAll('input[type="number"][step="any"]')) {
+  for (const input of controls.querySelectorAll('input[type="number"][step="any"]')) {
     const label = input.closest('label');
     const name = label.textContent.trim();
     const stepper = document.createElement('div');

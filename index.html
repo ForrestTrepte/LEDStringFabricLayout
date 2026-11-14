@@ -142,6 +142,7 @@
       <label>Turns <select name="turn">
           <option value="sharp">Sharp corners</option>
           <option value="round">Rounded U-turns</option>
+          <option value="diagonal">Diagonal LED-to-LED</option>
         </select></label>
       <p>Rounded turns extend half the row spacing beyond each straight row end where the wire turns.</p>
       <label><input name="labels" type="checkbox"> LED numbers</label>
@@ -231,6 +232,42 @@
     return { path, pointAt, left, right, bottom };
   }
 
+  function diagonalLayout(width, gap, pitch, offset, count) {
+    let x = offset;
+    let row = 0;
+    let direction = 1;
+    let right = x;
+    const positions = [[x, 0]];
+    const path = [`M 0 0 H ${x}`];
+    const gapRatio = gap / pitch;
+    const reach = pitch * Math.sqrt((1 - gapRatio) * (1 + gapRatio));
+    const tolerance = Math.min(pitch, width) * Number.EPSILON * 8;
+    const fits = position => position >= -tolerance && position <= width + tolerance;
+
+    for (let index = 1; index < count; index++) {
+      let nextX = x + direction * pitch;
+      if (!fits(nextX)) {
+        if (gap > pitch) break;
+        // Prefer crossing toward the opposite edge when both landings fit.
+        nextX = x - direction * reach;
+        if (!fits(nextX)) nextX = x + direction * reach;
+        if (!fits(nextX)) break;
+        row++;
+        const roomToLeft = nextX;
+        const roomToRight = width - nextX;
+        if (Math.abs(roomToRight - roomToLeft) <= tolerance) direction = -direction;
+        else direction = roomToRight > roomToLeft ? 1 : -1;
+      }
+      x = Math.max(0, Math.min(width, nextX));
+      const y = row * gap;
+      right = Math.max(right, x);
+      positions.push([x, y]);
+      path.push(`L ${x} ${y}`);
+    }
+
+    return { path: path.join(' '), positions, left: 0, right, bottom: row * gap };
+  }
+
   function render() {
     preview.replaceChildren();
     download.disabled = true;
@@ -242,15 +279,25 @@
     const count = input.count.valueAsNumber;
     const pitch = input.pitch.valueAsNumber;
     const offset = input.offset.valueAsNumber;
-    const length = offset + (count - 1) * pitch;
-    const geometry = Number.isFinite(length) && layout(
-      input.width.valueAsNumber, input.gap.valueAsNumber, length, input.turn.value === 'round'
-    );
+    const width = input.width.valueAsNumber;
+    const gap = input.gap.valueAsNumber;
+    const turn = input.turn.value;
+    const diagonal = turn === 'diagonal';
+    if (diagonal && offset > width) {
+      summary.textContent = 'For diagonal turns, the first LED offset must fit within the first row.';
+      return;
+    }
+    const requestedLength = offset + (count - 1) * pitch;
+    const geometry = Number.isFinite(requestedLength) && (diagonal
+      ? diagonalLayout(width, gap, pitch, offset, count)
+      : layout(width, gap, requestedLength, turn === 'round'));
     if (!geometry) {
       summary.textContent = 'The wire path is too long to draw. Reduce the LED count, spacing, or first LED offset.';
       return;
     }
-    const { path, pointAt, left, right, bottom } = geometry;
+    const { path, pointAt, positions, left, right, bottom } = geometry;
+    const placed = positions?.length ?? count;
+    const length = offset + (placed - 1) * pitch;
     const span = Math.max(right - left, bottom, .05);
     const padding = Math.max(span * .06, .05);
     const x = left - padding;
@@ -279,13 +326,15 @@
     const labels = input.labels.checked && add(preview, 'g', {
       fill: '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
     });
-    for (let index = 0; index < count; index++) {
-      const [cx, cy] = pointAt(offset + index * pitch);
+    for (let index = 0; index < placed; index++) {
+      const [cx, cy] = positions ? positions[index] : pointAt(offset + index * pitch);
       add(leds, 'circle', { cx, cy, r: dot });
       if (labels) add(labels, 'text', { x: cx, y: cy - dot - fontSize * .25 }).textContent = index + 1;
     }
     summary.textContent = [
-      `${count.toLocaleString('en-US')} LEDs`,
+      placed === count
+        ? `${count.toLocaleString('en-US')} LEDs`
+        : `${placed.toLocaleString('en-US')} of ${count.toLocaleString('en-US')} LEDs placed. The next row is out of reach at this LED spacing.`,
       `${inches.format(length / 12)} ft of wire`,
       `${inches.format(right - left)} × ${inches.format(bottom)} in wire footprint`,
       ...(input.grid.checked ? [`${gridStep} in grid`] : [])

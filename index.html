@@ -47,6 +47,46 @@
     gap: 12px
   }
 
+  #controls {
+    gap: 0
+  }
+
+  .settings-group {
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    gap: 10px;
+    min-width: 0;
+    padding: 12px 0
+  }
+
+  .settings-group:first-child {
+    padding-top: 0
+  }
+
+  .settings-group:last-child {
+    padding-bottom: 0
+  }
+
+  .settings-group+.settings-group {
+    border-top: 1px solid #354651
+  }
+
+  .settings-fields {
+    display: grid;
+    gap: 8px;
+    min-width: 0
+  }
+
+  .settings-heading {
+    align-self: center;
+    margin: 0;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+    color: #c4d7de;
+    font-size: .8rem
+  }
+
   label {
     display: block
   }
@@ -83,13 +123,6 @@
     gap: 18px
   }
 
-  #controls hr {
-    width: 100%;
-    margin: 0;
-    border: 0;
-    border-top: 1px solid #354651
-  }
-
   #optimize-progress {
     width: 100%;
     accent-color: #79e2ce
@@ -105,12 +138,32 @@
     accent-color: #79e2ce
   }
 
-  .dimension-stepper { display: flex; align-items: end; gap: 4px }
-  .dimension-stepper label { flex: 1; min-width: 0 }
-  .dimension-stepper input { min-width: 0; appearance: textfield }
+  .dimension-stepper {
+    display: flex;
+    align-items: end;
+    gap: 4px
+  }
+
+  .dimension-stepper label {
+    flex: 1;
+    min-width: 0
+  }
+
+  .dimension-stepper input {
+    min-width: 0;
+    appearance: textfield
+  }
+
   .dimension-stepper input::-webkit-inner-spin-button,
-  .dimension-stepper input::-webkit-outer-spin-button { appearance: none; margin: 0 }
-  .dimension-stepper button { padding: 8px; line-height: normal }
+  .dimension-stepper input::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0
+  }
+
+  .dimension-stepper button {
+    padding: 8px;
+    line-height: normal
+  }
 
   button {
     background: #9ff3df;
@@ -151,8 +204,19 @@
     gap: 8px;
     margin-top: 6px
   }
-  .cylinder-controls { display: grid; flex: none; gap: 8px }
-  .cylinder-preview h2 { margin: 0; font-size: 1.1rem; white-space: nowrap }
+
+  .cylinder-controls {
+    display: grid;
+    flex: none;
+    gap: 8px
+  }
+
+  .cylinder-preview h2 {
+    margin: 0;
+    font-size: 1.1rem;
+    white-space: nowrap
+  }
+
   .cylinder-preview canvas {
     --cylinder-height: clamp(170px, 29vh, 300px);
     display: block;
@@ -162,9 +226,15 @@
     height: var(--cylinder-height);
     border-radius: 8px
   }
-  .cylinder-preview button { justify-self: start }
+
+  .cylinder-preview button {
+    justify-self: start
+  }
+
   @media (max-width: 420px) {
-    .cylinder-preview { flex-wrap: wrap }
+    .cylinder-preview {
+      flex-wrap: wrap
+    }
   }
 
   @media (max-width: 950px) {
@@ -183,34 +253,60 @@
   <h1>LED Fabric Layout Simulator</h1>
   <div class="layout">
     <form id="controls">
-      <label>LED spacing (in) <input name="pitch" type="number" min=".001" step="any" value="2" required></label>
-      <label>Number of LEDs <input name="count" type="number" min="1" max="20000" step="1" value="103" required></label>
-      <label>Fabric width (in) <input name="fabricWidth" type="number" min=".001" step="any" value="6.5" required></label>
-      <label>Fabric height (in) <input name="fabricHeight" type="number" min=".001" step="any" value="2.5" required></label>
-      <hr>
-      <label>Row width (in) <input name="width" type="number" min=".001" step="any" value="23" required></label>
-      <label>Row spacing (in) <input name="gap" type="number" min=".001" step="any" value="3" required></label>
-      <label>First LED offset (in) <input name="offset" type="number" min="0" step="any" value="0" required></label>
-      <label>Turns <select name="turn">
-          <option value="sharp">Sharp corners</option>
-          <option value="round">Rounded U-turns</option>
-          <option value="diagonal">Diagonal LED-to-LED</option>
-        </select></label>
-      <div id="diagonal-lead-control" hidden>
-        <label>Diagonal lead-in (in) <input name="diagonalLead" type="number" min="0" step="any" value="0" required
-            disabled></label>
-        <label><input name="adjustLead" type="checkbox"> Adjust lead-in to fit</label>
-        <label><input name="reverseLead" type="checkbox"> Try lead-in in either direction</label>
-        <label><input name="skipRows" type="checkbox"> Skip rows if needed</label>
-        <label><input name="reduceGap" type="checkbox"> Reduce row spacing if needed</label>
-        <label><input name="extraBend" type="checkbox"> Allow extra bends</label>
-        <label><input name="retryRoute" type="checkbox"> Revisit earlier placement choices</label>
+      <div class="settings-group" role="group" aria-labelledby="settings-fabric">
+        <h2 class="settings-heading" id="settings-fabric">Fabric</h2>
+        <div class="settings-fields">
+          <label>Fabric width (in) <input name="fabricWidth" type="number" min=".001" step="any" value="6.5"
+              required></label>
+          <label>Fabric height (in) <input name="fabricHeight" type="number" min=".001" step="any" value="2.5"
+              required></label>
+        </div>
       </div>
-      <p>Rounded turns extend half the row spacing beyond each straight row end where the wire turns.</p>
-      <label><input name="labels" type="checkbox"> LED numbers</label>
-      <label><input name="wire" type="checkbox" checked> Wire path</label>
-      <label><input name="grid" type="checkbox" checked> Inch grid</label>
-      <button id="export" type="button">Download SVG</button>
+      <div class="settings-group" role="group" aria-labelledby="settings-led-specs">
+        <h2 class="settings-heading" id="settings-led-specs">LED specs</h2>
+        <div class="settings-fields">
+          <label>LED spacing (in) <input name="pitch" type="number" min=".001" step="any" value="2" required></label>
+          <label>Number of LEDs <input name="count" type="number" min="1" max="20000" step="1" value="103"
+              required></label>
+        </div>
+      </div>
+      <div class="settings-group" role="group" aria-labelledby="settings-placement-options">
+        <h2 class="settings-heading" id="settings-placement-options">Placement Options</h2>
+        <div class="settings-fields">
+          <label>Row width (in) <input name="width" type="number" min=".001" step="any" value="23" required></label>
+          <label>Row spacing (in) <input name="gap" type="number" min=".001" step="any" value="3" required></label>
+          <label>First LED offset (in) <input name="offset" type="number" min="0" step="any" value="0" required></label>
+        </div>
+      </div>
+      <div class="settings-group" role="group" aria-labelledby="settings-turns">
+        <h2 class="settings-heading" id="settings-turns">Turns</h2>
+        <div class="settings-fields">
+          <select name="turn" aria-label="Turn mode">
+            <option value="sharp">Sharp corners</option>
+            <option value="round">Rounded U-turns</option>
+            <option value="diagonal">Diagonal LED-to-LED</option>
+          </select>
+          <div id="diagonal-lead-control" hidden>
+            <label>Diagonal lead-in (in) <input name="diagonalLead" type="number" min="0" step="any" value="0" required
+                disabled></label>
+            <label><input name="adjustLead" type="checkbox"> Adjust lead-in to fit</label>
+            <label><input name="reverseLead" type="checkbox"> Try lead-in in either direction</label>
+            <label><input name="skipRows" type="checkbox"> Skip rows if needed</label>
+            <label><input name="reduceGap" type="checkbox"> Reduce row spacing if needed</label>
+            <label><input name="extraBend" type="checkbox"> Allow extra bends</label>
+            <label><input name="retryRoute" type="checkbox"> Revisit earlier placement choices</label>
+          </div>
+        </div>
+      </div>
+      <div class="settings-group" role="group" aria-labelledby="settings-view">
+        <h2 class="settings-heading" id="settings-view">View</h2>
+        <div class="settings-fields">
+          <label><input name="labels" type="checkbox"> LED numbers</label>
+          <label><input name="wire" type="checkbox" checked> Wire path</label>
+          <label><input name="grid" type="checkbox" checked> Inch grid</label>
+          <button id="export" type="button">Download SVG</button>
+        </div>
+      </div>
     </form>
     <section aria-label="Layout preview">
       <p id="summary" role="status"></p>
@@ -234,8 +330,10 @@
       </section>
       <form id="optimize-controls" aria-labelledby="optimize-heading">
         <h2 id="optimize-heading">Optimize<br />Scattered Coverage</h2>
-        <label>Number of samples <input name="samples" type="number" min="1" max="9007199254740991" step="1" value="1000000" required></label>
-        <p>Uses the current LED spacing and count.</p>
+        <label>Number of samples <input name="samples" type="number" min="1" max="9007199254740991" step="1"
+            value="1000000" required></label>
+        <p>Tries different combinations of placement options. Uses the current LED specs, fabric, and turn mode to
+          optimize coverage while avoiding lines.</p>
         <button type="submit">Run optimization</button>
         <button id="optimize-cancel" type="button" disabled>Cancel</button>
         <progress id="optimize-progress" aria-label="Optimization progress" max="1" value="0"></progress>
@@ -259,7 +357,7 @@
   const presets = new Map((window.ledLayoutPresets ?? []).map(preset => [preset.name, preset.settings]));
   const diagonalLeadControl = document.querySelector('#diagonal-lead-control');
   const continuationFields = ['adjustLead', 'reverseLead', 'skipRows', 'reduceGap', 'extraBend', 'retryRoute'];
-  const presetFields = ['pitch', 'width', 'gap', 'count', 'offset', 'turn', 'diagonalLead', ...continuationFields, 'labels', 'wire', 'grid'];
+  const presetFields = ['pitch', 'width', 'gap', 'count', 'offset', 'turn', 'diagonalLead', ...continuationFields];
   const svgNS = 'http://www.w3.org/2000/svg';
   const inches = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
   const cylinder = document.querySelector('#cylinder');
@@ -604,7 +702,7 @@
 
   function fabricOffset(geometry, fabricWidth, fabricHeight) {
     return [(fabricWidth - (geometry.right - geometry.left)) / 2 - geometry.left,
-      (fabricHeight - geometry.bottom) / 2];
+    (fabricHeight - geometry.bottom) / 2];
   }
 
   function render(candidate) {
@@ -740,7 +838,7 @@
     }
     const fallbackFields = ['adjustLead', 'reverseLead', 'skipRows', 'reduceGap', 'extraBend'];
     const leaders = [];
-    const { pitch, count } = initial;
+    const { pitch, count, turn } = initial;
     let checked = 0;
     let fits = 0;
 
@@ -803,7 +901,6 @@
       }
     }
 
-    const modes = ['sharp', 'round', 'diagonal', 'diagonal'];
     const random = Math.random;
     function propose() {
       const parent = leaders.length && random() < .7
@@ -816,7 +913,6 @@
       const gap = Math.max(.001, parent
         ? vary(parent.gap, Math.min(fabricHeight, parent.gap) * .4)
         : (fabricHeight / rows) * (.15 + random() * 1.5));
-      const turn = parent && random() < .9 ? parent.turn : modes[Math.floor(random() * modes.length)];
       const offset = Math.min(width, Math.max(0, parent ? vary(parent.offset, pitch * .25) : random() * Math.min(width, pitch)));
       const diagonalLead = Math.min(pitch, Math.max(0, parent
         ? vary(parent.diagonalLead, pitch * .15) : random() ** 2 * pitch));
@@ -923,7 +1019,7 @@
   previewOptimization.addEventListener('click', () => toggleBestPreview(!showingBest));
   applyOptimization.addEventListener('click', () => {
     const input = controls.elements;
-    for (const field of ['width', 'gap', 'offset', 'turn', 'diagonalLead']) input[field].value = bestLayout[field];
+    for (const field of ['width', 'gap', 'offset', 'diagonalLead']) input[field].value = bestLayout[field];
     for (const field of continuationFields) input[field].checked = bestLayout.continuation[field] ?? false;
     presetList.value = '';
     showingBest = false;
@@ -968,14 +1064,16 @@
   }
 
   document.querySelector('#export-presets').addEventListener('click', () => {
-    const library = Array.from(presets, ([name, settings]) => ({ name, settings }));
+    const library = Array.from(presets, ([name, settings]) => ({
+      name, settings: Object.fromEntries(presetFields.map(field => [field, settings[field]]))
+    }));
     downloadFile(`window.ledLayoutPresets = ${JSON.stringify(library, null, 2)};\n`, 'text/javascript', 'presets.js');
     presetStatus.textContent = 'Replace presets.js beside index.html with the downloaded file.';
   });
 
   controls.addEventListener('input', event => {
     presetList.value = '';
-    if (['pitch', 'count', 'fabricWidth', 'fabricHeight'].some(field => event.target === controls.elements[field])) {
+    if (['pitch', 'count', 'fabricWidth', 'fabricHeight', 'turn'].some(field => event.target === controls.elements[field])) {
       clearOptimization();
     }
     if (showingBest) toggleBestPreview(false);

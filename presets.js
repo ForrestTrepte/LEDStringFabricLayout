@@ -14,10 +14,7 @@ window.ledLayoutPresets = [
       "skipRows": false,
       "reduceGap": false,
       "extraBend": false,
-      "retryRoute": false,
-      "labels": false,
-      "wire": true,
-      "grid": true
+      "retryRoute": false
     }
   },
   {
@@ -35,10 +32,7 @@ window.ledLayoutPresets = [
       "skipRows": false,
       "reduceGap": false,
       "extraBend": false,
-      "retryRoute": false,
-      "labels": false,
-      "wire": true,
-      "grid": true
+      "retryRoute": false
     }
   },
   {
@@ -56,10 +50,7 @@ window.ledLayoutPresets = [
       "skipRows": false,
       "reduceGap": false,
       "extraBend": false,
-      "retryRoute": false,
-      "labels": false,
-      "wire": true,
-      "grid": true
+      "retryRoute": false
     }
   },
   {
@@ -77,10 +68,7 @@ window.ledLayoutPresets = [
       "skipRows": false,
       "reduceGap": false,
       "extraBend": false,
-      "retryRoute": false,
-      "labels": false,
-      "wire": true,
-      "grid": true
+      "retryRoute": false
     }
   },
   {
@@ -98,10 +86,7 @@ window.ledLayoutPresets = [
       "skipRows": false,
       "reduceGap": false,
       "extraBend": false,
-      "retryRoute": false,
-      "labels": false,
-      "wire": true,
-      "grid": true
+      "retryRoute": false
     }
   },
   {
@@ -119,10 +104,7 @@ window.ledLayoutPresets = [
       "skipRows": false,
       "reduceGap": false,
       "extraBend": false,
-      "retryRoute": false,
-      "labels": false,
-      "wire": true,
-      "grid": true
+      "retryRoute": false
     }
   }
 ];

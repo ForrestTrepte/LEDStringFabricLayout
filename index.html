@@ -144,6 +144,11 @@
     border-radius: 8px
   }
 
+  .cylinder-preview { display: grid; gap: 10px; margin-top: 18px }
+  .cylinder-preview h2 { margin: 0; font-size: 1.1rem }
+  .cylinder-preview canvas { display: block; width: 100%; height: clamp(220px, 38vh, 420px); border-radius: 8px }
+  .cylinder-preview button { justify-self: start }
+
   @media (max-width: 950px) {
     .layout {
       grid-template-columns: 250px minmax(0, 1fr)
@@ -192,6 +197,11 @@
     <section aria-label="Layout preview">
       <p id="summary" role="status"></p>
       <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Serpentine LED layout"></svg>
+      <div class="cylinder-preview">
+        <h2>Wrapped fabric</h2>
+        <canvas id="cylinder" role="img" aria-label="Cylinder showing LEDs wrapped around the fabric"></canvas>
+        <button id="rotate-cylinder" type="button">Pause rotation</button>
+      </div>
     </section>
     <div class="sidebar">
       <section id="preset-controls" aria-labelledby="preset-heading">
@@ -232,6 +242,114 @@
   const presetFields = ['pitch', 'width', 'gap', 'count', 'offset', 'turn', 'diagonalLead', ...continuationFields, 'labels', 'wire', 'grid'];
   const svgNS = 'http://www.w3.org/2000/svg';
   const inches = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
+  const cylinder = document.querySelector('#cylinder');
+  const cylinderContext = cylinder.getContext('2d');
+  const rotateCylinder = document.querySelector('#rotate-cylinder');
+  let wrappedLayout;
+  let rotation = 0;
+  let rotating = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let lastFrame;
+  let frame;
+
+  function drawCylinder() {
+    const ctx = cylinderContext;
+    if (!ctx) return;
+    const { clientWidth, clientHeight } = cylinder;
+    if (!clientWidth || !clientHeight) return;
+    const pixelRatio = window.devicePixelRatio || 1;
+    const canvasWidth = Math.round(clientWidth * pixelRatio);
+    const canvasHeight = Math.round(clientHeight * pixelRatio);
+    if (cylinder.width !== canvasWidth || cylinder.height !== canvasHeight) {
+      cylinder.width = canvasWidth;
+      cylinder.height = canvasHeight;
+    }
+    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    ctx.clearRect(0, 0, clientWidth, clientHeight);
+    if (!wrappedLayout) return;
+
+    const { width, height, leds } = wrappedLayout;
+    const radius = width / (2 * Math.PI);
+    const tilt = .32;
+    const scale = Math.min(clientWidth * .82 / (2 * radius), clientHeight * .79 / (height + 2 * radius * tilt));
+    const rx = radius * scale;
+    const ry = rx * tilt;
+    const cx = clientWidth / 2;
+    const top = (clientHeight - height * scale) / 2;
+    const bottom = top + height * scale;
+    const shade = ctx.createLinearGradient(cx - rx, 0, cx + rx, 0);
+    shade.addColorStop(0, '#1b2d38');
+    shade.addColorStop(.38, '#415e6d');
+    shade.addColorStop(.68, '#2b4553');
+    shade.addColorStop(1, '#172934');
+
+    ctx.beginPath();
+    ctx.moveTo(cx - rx, top);
+    ctx.lineTo(cx - rx, bottom);
+    ctx.ellipse(cx, bottom, rx, ry, 0, Math.PI, 0, true);
+    ctx.lineTo(cx + rx, top);
+    ctx.ellipse(cx, top, rx, ry, 0, 0, Math.PI, true);
+    ctx.fillStyle = shade;
+    ctx.fill();
+    ctx.strokeStyle = '#668390';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(cx, top, rx, ry, 0, 0, 2 * Math.PI);
+    ctx.fillStyle = '#0f1820';
+    ctx.fill();
+    ctx.stroke();
+
+    const seamDepth = Math.cos(rotation);
+    if (seamDepth > 0) {
+      const seamX = cx + rx * Math.sin(rotation);
+      const seamY = top + ry * seamDepth;
+      ctx.beginPath();
+      ctx.moveTo(seamX, seamY);
+      ctx.lineTo(seamX, seamY + height * scale);
+      ctx.strokeStyle = '#8095a0';
+      ctx.setLineDash([3, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const dot = Math.max(1.5, Math.min(5, rx * .055));
+    for (const [angle, y] of leds) {
+      const phase = angle + rotation;
+      const depth = Math.cos(phase);
+      if (depth <= 0) continue;
+      ctx.beginPath();
+      ctx.ellipse(cx + rx * Math.sin(phase), top + y * scale + ry * depth,
+        dot * Math.max(.22, depth), dot, 0, 0, 2 * Math.PI);
+      ctx.fillStyle = '#9ff3df';
+      ctx.fill();
+    }
+  }
+
+  function animateCylinder(now) {
+    frame = undefined;
+    if (lastFrame !== undefined) rotation = (rotation + Math.min(50, now - lastFrame) * .0007) % (2 * Math.PI);
+    lastFrame = now;
+    drawCylinder();
+    if (rotating && wrappedLayout) frame = requestAnimationFrame(animateCylinder);
+  }
+
+  function refreshCylinder() {
+    drawCylinder();
+    if (rotating && wrappedLayout && frame === undefined) {
+      lastFrame = undefined;
+      frame = requestAnimationFrame(animateCylinder);
+    }
+    rotateCylinder.textContent = rotating ? 'Pause rotation' : 'Play rotation';
+  }
+
+  rotateCylinder.addEventListener('click', () => {
+    rotating = !rotating;
+    if (!rotating && frame !== undefined) {
+      cancelAnimationFrame(frame);
+      frame = undefined;
+    }
+    refreshCylinder();
+  });
+  new ResizeObserver(drawCylinder).observe(cylinder);
 
   function add(parent, tag, attributes) {
     const node = document.createElementNS(svgNS, tag);
@@ -470,6 +588,8 @@
 
   function render(candidate) {
     preview.replaceChildren();
+    wrappedLayout = undefined;
+    refreshCylinder();
     download.disabled = true;
     const input = controls.elements;
     const diagonal = (candidate?.turn ?? input.turn.value) === 'diagonal';
@@ -536,11 +656,19 @@
     const labels = input.labels.checked && add(route, 'g', {
       fill: '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
     });
+    const wrappedLEDs = [];
     for (let index = 0; index < placed; index++) {
       const [cx, cy] = positions ? positions[index] : pointAt(offset + index * pitch);
       add(leds, 'circle', { cx, cy, r: dot });
       if (labels) add(labels, 'text', { x: cx, y: cy - dot - fontSize * .25 }).textContent = index + 1;
+      const fabricX = cx + dx;
+      const fabricY = cy + dy;
+      if (fabricX >= 0 && fabricX <= fabricWidth && fabricY >= 0 && fabricY <= fabricHeight) {
+        wrappedLEDs.push([fabricX / fabricWidth * 2 * Math.PI, fabricY]);
+      }
     }
+    wrappedLayout = { width: fabricWidth, height: fabricHeight, leds: wrappedLEDs };
+    refreshCylinder();
     summary.textContent = [
       placed === count
         ? `${count.toLocaleString('en-US')} LEDs`

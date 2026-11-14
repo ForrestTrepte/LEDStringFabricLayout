@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LED Fabric Layout Simulator</title>
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; background: #0f1820; color: #edf4f6; font: 16px system-ui, sans-serif }
+  main { max-width: 1200px; margin: auto; padding: clamp(18px, 4vw, 48px) }
+  h1 { margin: 0 0 24px; font-size: clamp(26px, 4vw, 44px); letter-spacing: -.035em }
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 18px; align-items: start }
+  form, section { background: #17242e; border: 1px solid #354651; border-radius: 14px; padding: 18px }
+  form { display: grid; gap: 12px }
+  label { display: block }
+  input, select, button { font: inherit }
+  input[type=number], select { display: block; width: 100%; margin-top: 4px; padding: 7px 9px; color: inherit; background: #0f1820; border: 1px solid #607783; border-radius: 6px }
+  input[type=checkbox] { accent-color: #79e2ce }
+  button { background: #9ff3df; color: #102a26; border: 0; border-radius: 7px; padding: 9px; font-weight: 700; cursor: pointer }
+  button:disabled { opacity: .5; cursor: default }
+  p { margin: 0; color: #c4d7de; font-size: .9rem }
+  #summary { margin-bottom: 12px }
+  svg { display: block; width: 100%; height: clamp(260px, 60vh, 650px); border-radius: 8px }
+  @media (max-width: 700px) { .layout { grid-template-columns: 1fr } }
+</style>
+<main>
+  <h1>LED Fabric Layout Simulator</h1>
+  <div class="layout">
+    <form id="controls">
+      <label>LED spacing (in) <input name="pitch" type="number" min=".001" step="any" value="2" required></label>
+      <label>Straight row width (in) <input name="width" type="number" min=".001" step="any" value="23" required></label>
+      <label>Row spacing (in) <input name="gap" type="number" min=".001" step="any" value="3" required></label>
+      <label>Number of rows <input name="rows" type="number" min="1" max="500" step="1" value="8" required></label>
+      <label>First LED offset (in) <input name="offset" type="number" min="0" step="any" value="0" required></label>
+      <label>Turns <select name="turn"><option value="sharp">Sharp corners</option><option value="round">Rounded U-turns</option></select></label>
+      <p>Rounded turns extend half the row spacing beyond each straight row end where the wire turns.</p>
+      <label><input name="labels" type="checkbox"> LED numbers</label>
+      <label><input name="wire" type="checkbox" checked> Wire path</label>
+      <label><input name="grid" type="checkbox" checked> Inch grid</label>
+      <button id="export" type="button">Download SVG</button>
+    </form>
+    <section aria-label="Layout preview">
+      <p id="summary" role="status"></p>
+      <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Serpentine LED layout"></svg>
+    </section>
+  </div>
+</main>
+<script>
+  'use strict';
+  const controls = document.querySelector('#controls');
+  const preview = document.querySelector('#preview');
+  const summary = document.querySelector('#summary');
+  const download = document.querySelector('#export');
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const inches = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
+
+  function add(parent, tag, attributes) {
+    const node = document.createElementNS(svgNS, tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    parent.append(node);
+    return node;
+  }
+
+  function layout(width, gap, rows, rounded) {
+    const radius = gap / 2;
+    const turnLength = rounded ? Math.PI * radius : gap;
+    let path = 'M 0 0';
+    for (let row = 0; row < rows; row++) {
+      const right = row % 2 === 0;
+      const end = right ? width : 0;
+      path += ' H ' + end;
+      if (row === rows - 1) break;
+      const nextY = (row + 1) * gap;
+      path += rounded ? ` A ${radius} ${radius} 0 0 ${right ? 1 : 0} ${end} ${nextY}` : ' V ' + nextY;
+    }
+
+    function pointAt(distance) {
+      const stride = width + turnLength;
+      const row = Math.min(rows - 1, Math.floor(distance / stride));
+      const along = distance - row * stride;
+      const right = row % 2 === 0;
+      const y = row * gap;
+      if (along <= width) return [right ? along : width - along, y];
+      const end = right ? width : 0;
+      const alongTurn = along - width;
+      if (!rounded) return [end, y + alongTurn];
+      const angle = alongTurn / radius;
+      return [end + (right ? 1 : -1) * radius * Math.sin(angle), y + radius * (1 - Math.cos(angle))];
+    }
+
+    return {
+      path, pointAt,
+      length: rows * width + (rows - 1) * turnLength,
+      left: rounded && rows > 2 ? -radius : 0,
+      right: width + (rounded && rows > 1 ? radius : 0),
+      bottom: (rows - 1) * gap
+    };
+  }
+
+  function render() {
+    preview.replaceChildren();
+    download.disabled = true;
+    const input = controls.elements;
+    if (!controls.checkValidity()) {
+      summary.textContent = 'Enter positive dimensions and a whole row count between 1 and 500.';
+      return;
+    }
+    const { path, pointAt, length, left, right, bottom } = layout(
+      input.width.valueAsNumber, input.gap.valueAsNumber, input.rows.valueAsNumber, input.turn.value === 'round'
+    );
+    const pitch = input.pitch.valueAsNumber;
+    const offset = input.offset.valueAsNumber;
+    const tolerance = Math.min(pitch * 1e-8, length * Number.EPSILON * 8);
+    const count = Math.max(0, Math.floor((length - offset + tolerance) / pitch) + 1);
+    if (!Number.isFinite(length) || count > 20000) {
+      summary.textContent = 'Reduce the layout size or increase LED spacing to plot up to 20,000 LEDs.';
+      return;
+    }
+    const span = Math.max(right - left, bottom);
+    const padding = Math.max(span * .06, .05);
+    const x = left - padding;
+    const y = -padding;
+    const w = right - left + 2 * padding;
+    const h = bottom + 2 * padding;
+    const dot = Math.min(pitch * .18, input.gap.valueAsNumber * .2, span * .011);
+    const fontSize = span * .018;
+    preview.setAttribute('viewBox', [x, y, w, h].join(' '));
+    add(preview, 'rect', { x, y, width: w, height: h, fill: '#0d171f' });
+
+    const gridStep = Math.max(1, 10 ** Math.ceil(Math.log10(Math.max(w, h) / 100)));
+    if (input.grid.checked) {
+      const grid = add(preview, 'g', { stroke: '#354b58', 'stroke-width': span * .001 });
+      for (let i = Math.ceil(x / gridStep); i <= Math.floor((x + w) / gridStep); i++) {
+        add(grid, 'line', { x1: i * gridStep, y1: y, x2: i * gridStep, y2: y + h });
+      }
+      for (let i = Math.ceil(y / gridStep); i <= Math.floor((y + h) / gridStep); i++) {
+        add(grid, 'line', { x1: x, y1: i * gridStep, x2: x + w, y2: i * gridStep });
+      }
+    }
+    if (input.wire.checked) {
+      add(preview, 'path', { d: path, fill: 'none', stroke: '#78a3b4', 'stroke-width': span * .0025, 'stroke-linejoin': 'round' });
+    }
+    const leds = add(preview, 'g', { fill: '#9ff3df' });
+    const labels = input.labels.checked && add(preview, 'g', {
+      fill: '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
+    });
+    for (let index = 0; index < count; index++) {
+      const [cx, cy] = pointAt(Math.min(length, offset + index * pitch));
+      add(leds, 'circle', { cx, cy, r: dot });
+      if (labels) add(labels, 'text', { x: cx, y: cy - dot - fontSize * .25 }).textContent = index + 1;
+    }
+    summary.textContent = [
+      `${count.toLocaleString('en-US')} LEDs`,
+      `${inches.format(length / 12)} ft of wire`,
+      `${inches.format(right - left)} × ${inches.format(bottom)} in wire footprint`,
+      ...(input.grid.checked ? [`${gridStep} in grid`] : [])
+    ].join(' · ');
+    download.disabled = false;
+  }
+
+  controls.addEventListener('input', render);
+  controls.addEventListener('submit', event => event.preventDefault());
+  download.addEventListener('click', () => {
+    const svg = preview.cloneNode(true);
+    const [, , width, height] = svg.getAttribute('viewBox').split(' ');
+    svg.setAttribute('width', width + 'in');
+    svg.setAttribute('height', height + 'in');
+    const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'led-fabric-layout.svg';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  render();
+</script>
+</html>

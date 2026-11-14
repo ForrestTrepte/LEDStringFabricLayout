@@ -6,21 +6,24 @@
 <style>
   * { box-sizing: border-box }
   body { margin: 0; background: #0f1820; color: #edf4f6; font: 16px system-ui, sans-serif }
-  main { max-width: 1200px; margin: auto; padding: clamp(18px, 4vw, 48px) }
+  main { max-width: 1478px; margin: auto; padding: clamp(18px, 4vw, 48px) }
   h1 { margin: 0 0 24px; font-size: clamp(26px, 4vw, 44px); letter-spacing: -.035em }
-  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 18px; align-items: start }
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr) 260px; gap: 18px; align-items: start }
   form, section { background: #17242e; border: 1px solid #354651; border-radius: 14px; padding: 18px }
   form { display: grid; gap: 12px }
   label { display: block }
   input, select, button { font: inherit }
-  input[type=number], select { display: block; width: 100%; margin-top: 4px; padding: 7px 9px; color: inherit; background: #0f1820; border: 1px solid #607783; border-radius: 6px }
+  input[type=number], input[type=text], select { display: block; width: 100%; margin-top: 4px; padding: 7px 9px; color: inherit; background: #0f1820; border: 1px solid #607783; border-radius: 6px }
+  #preset-controls { display: grid; gap: 8px; min-width: 0; overflow-wrap: anywhere }
+  #preset-heading { margin: 0 0 4px; font-size: 1.1rem }
   input[type=checkbox] { accent-color: #79e2ce }
   button { background: #9ff3df; color: #102a26; border: 0; border-radius: 7px; padding: 9px; font-weight: 700; cursor: pointer }
   button:disabled { opacity: .5; cursor: default }
   p { margin: 0; color: #c4d7de; font-size: .9rem }
   #summary { margin-bottom: 12px }
   svg { display: block; width: 100%; height: clamp(260px, 60vh, 650px); border-radius: 8px }
-  @media (max-width: 700px) { .layout { grid-template-columns: 1fr } }
+  @media (max-width: 950px) { .layout { grid-template-columns: 250px minmax(0, 1fr) } }
+  @media (max-width: 700px) { .layout { grid-template-columns: minmax(0, 1fr) } }
 </style>
 <main>
   <h1>LED Fabric Layout Simulator</h1>
@@ -42,14 +45,28 @@
       <p id="summary" role="status"></p>
       <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Serpentine LED layout"></svg>
     </section>
+    <section id="preset-controls" aria-labelledby="preset-heading">
+      <h2 id="preset-heading">Presets</h2>
+      <label>Saved layout <select id="preset-list"></select></label>
+      <label>Preset name <input id="preset-name" type="text" maxlength="80"></label>
+      <button id="save-preset" type="button">Save preset</button>
+      <button id="export-presets" type="button">Download preset library</button>
+      <p id="preset-status" role="status">Save the downloaded presets.js beside index.html to keep your presets.</p>
+    </section>
   </div>
 </main>
+<script src="./presets.js"></script>
 <script>
   'use strict';
   const controls = document.querySelector('#controls');
   const preview = document.querySelector('#preview');
   const summary = document.querySelector('#summary');
   const download = document.querySelector('#export');
+  const presetList = document.querySelector('#preset-list');
+  const presetName = document.querySelector('#preset-name');
+  const presetStatus = document.querySelector('#preset-status');
+  const presets = new Map((window.ledLayoutPresets ?? []).map(preset => [preset.name, preset.settings]));
+  const presetFields = ['pitch', 'width', 'gap', 'count', 'offset', 'turn', 'labels', 'wire', 'grid'];
   const svgNS = 'http://www.w3.org/2000/svg';
   const inches = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
 
@@ -168,20 +185,71 @@
     download.disabled = false;
   }
 
-  controls.addEventListener('input', render);
+  function updatePresetList(selected = '') {
+    presetList.replaceChildren(new Option(presets.size ? 'Choose a preset' : 'No saved presets', ''));
+    for (const name of presets.keys()) presetList.add(new Option(name, name));
+    presetList.value = selected;
+  }
+
+  presetList.addEventListener('change', () => {
+    const name = presetList.value;
+    if (!presets.has(name)) return;
+    const settings = presets.get(name);
+    for (const field of presetFields) {
+      const control = controls.elements[field];
+      if (control.type === 'checkbox') control.checked = settings[field];
+      else control.value = settings[field];
+    }
+    presetName.value = name;
+    render();
+  });
+
+  document.querySelector('#save-preset').addEventListener('click', () => {
+    const name = presetName.value.trim();
+    if (!name) {
+      presetStatus.textContent = 'Enter a preset name.';
+      presetName.focus();
+      return;
+    }
+    if (!controls.reportValidity()) return;
+    const settings = Object.fromEntries(presetFields.map(field => {
+      const control = controls.elements[field];
+      return [field, control.type === 'checkbox' ? control.checked : control.value];
+    }));
+    const replaced = presets.has(name);
+    presets.set(name, settings);
+    updatePresetList(name);
+    presetStatus.textContent = `${replaced ? 'Updated' : 'Added'} “${name}”. Download the library to keep the change.`;
+  });
+
+  function downloadFile(content, type, filename) {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  document.querySelector('#export-presets').addEventListener('click', () => {
+    const library = Array.from(presets, ([name, settings]) => ({ name, settings }));
+    downloadFile(`window.ledLayoutPresets = ${JSON.stringify(library, null, 2)};\n`, 'text/javascript', 'presets.js');
+    presetStatus.textContent = 'Replace presets.js beside index.html with the downloaded file.';
+  });
+
+  controls.addEventListener('input', () => {
+    presetList.value = '';
+    render();
+  });
   controls.addEventListener('submit', event => event.preventDefault());
   download.addEventListener('click', () => {
     const svg = preview.cloneNode(true);
     const [, , width, height] = svg.getAttribute('viewBox').split(' ');
     svg.setAttribute('width', width + 'in');
     svg.setAttribute('height', height + 'in');
-    const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'led-fabric-layout.svg';
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadFile(new XMLSerializer().serializeToString(svg), 'image/svg+xml', 'led-fabric-layout.svg');
   });
+  updatePresetList();
   render();
 </script>
 </html>

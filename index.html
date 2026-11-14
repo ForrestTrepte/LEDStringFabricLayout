@@ -477,8 +477,12 @@
     return node;
   }
 
-  function layout(width, gap, length, rounded) {
+  function layout(rowWidth, gap, length, rounded) {
     const radius = gap / 2;
+    const startX = rounded ? radius : 0;
+    const width = rounded ? rowWidth - gap : rowWidth;
+    const endX = startX + width;
+    if (width < 0) return null;
     const turnLength = rounded ? Math.PI * radius : gap;
     const stride = width + turnLength;
     const lastRow = Math.floor(length / stride);
@@ -489,21 +493,21 @@
       const along = distance - row * stride;
       const right = row % 2 === 0;
       const y = row * gap;
-      if (along <= width) return [right ? along : width - along, y];
-      const end = right ? width : 0;
+      if (along <= width) return [right ? startX + along : endX - along, y];
+      const end = right ? endX : startX;
       const alongTurn = along - width;
       if (!rounded) return [end, y + alongTurn];
       const angle = alongTurn / radius;
       return [end + (right ? 1 : -1) * radius * Math.sin(angle), y + radius * (1 - Math.cos(angle))];
     }
 
-    let path = 'M 0 0';
-    let left = 0;
-    let right = Math.min(length, width);
+    let path = `M ${startX} 0`;
+    let left = startX;
+    let right = startX + Math.min(length, width);
     const [lastX, bottom] = pointAt(length);
     for (let row = 0; row <= lastRow; row++) {
       const goesRight = row % 2 === 0;
-      const end = goesRight ? width : 0;
+      const end = goesRight ? endX : startX;
       const remaining = length - row * stride;
       if (remaining <= width) {
         path += ' H ' + lastX;
@@ -514,8 +518,8 @@
       if (rounded) {
         path += ` A ${radius} ${radius} 0 0 ${goesRight ? 1 : 0} ${turnX} ${turnY}`;
         const reach = radius * Math.sin(Math.min(Math.PI / 2, (remaining - width) / radius));
-        if (goesRight) right = Math.max(right, width + reach);
-        else left = Math.min(left, -reach);
+        if (goesRight) right = Math.max(right, endX + reach);
+        else left = Math.min(left, startX - reach);
       } else {
         path += ' V ' + turnY;
       }
@@ -724,6 +728,10 @@
       return;
     }
     const requestedLength = offset + (count - 1) * pitch;
+    if (turn === 'round' && gap > width) {
+      summary.textContent = 'For rounded turns, row spacing must be no greater than row width.';
+      return;
+    }
     const geometry = Number.isFinite(requestedLength) && (diagonal
       ? diagonalLayout(width, gap, pitch, offset, count, diagonalLead, continuation)
       : layout(width, gap, requestedLength, turn === 'round'));
@@ -837,8 +845,9 @@
       }
     }
     const fallbackFields = ['adjustLead', 'reverseLead', 'skipRows', 'reduceGap', 'extraBend'];
-    const leaders = [];
     const { pitch, count, turn } = initial;
+    const crowdingDistance = Math.min(pitch, Math.sqrt(fabricWidth / count) * Math.sqrt(fabricHeight)) * .5;
+    let best;
     let checked = 0;
     let fits = 0;
 
@@ -855,28 +864,53 @@
         total += Math.sqrt(nearest);
         worst = Math.max(worst, nearest);
       }
-      // Count nearly straight triples among a bounded sample of LEDs.
+      // Score both the longest visible line and the frequency of aligned triples.
       const stride = Math.max(1, Math.ceil(count / 40));
-      const alignmentTolerance = Math.min(pitch, scale) / scale * .035;
+      const ordered = [];
+      for (let index = 0; index < count; index += stride) ordered.push(positions[index]);
+      ordered.sort(([ax, ay], [bx, by]) => ax - bx || ay - by);
+      const alignmentTolerance = Math.min(pitch, scale) * .035;
       let triples = 0;
       let aligned = 0;
-      for (let i = 0; i < count; i += stride) {
-        const [x, y] = positions[i];
-        for (let j = i + stride; j < count; j += stride) {
-          const [px, py] = positions[j];
-          const dx = (px - x) / scale;
-          const dy = (py - y) / scale;
+      let longestLine = 2;
+      for (let i = 0; i < ordered.length; i++) {
+        const [x, y] = ordered[i];
+        for (let j = i + 2; j < ordered.length; j++) {
+          const [px, py] = ordered[j];
+          const dx = px - x;
+          const dy = py - y;
           const distance = Math.hypot(dx, dy);
-          if (distance === 0) continue;
-          for (let k = j + stride; k < count; k += stride) {
-            const [qx, qy] = positions[k];
-            const cross = dx * ((qy - y) / scale) - dy * ((qx - x) / scale);
+          if (distance <= alignmentTolerance) continue;
+          const threshold = distance * alignmentTolerance;
+          let lineSize = 2;
+          for (let k = i + 1; k < j; k++) {
+            const [qx, qy] = ordered[k];
             triples++;
-            if (Math.abs(cross) <= distance * alignmentTolerance) aligned++;
+            if (Math.abs(dx * (qy - y) - dy * (qx - x)) <= threshold) {
+              aligned++;
+              lineSize++;
+            }
           }
+          longestLine = Math.max(longestLine, lineSize);
         }
       }
-      return total / samples.length + .45 * Math.sqrt(worst) + .12 * aligned / Math.max(1, triples);
+      const linePenalty = (longestLine - 2) / Math.max(4, ordered.length - 2);
+      // Keep the closest pair visible even when its contribution to the average is small.
+      const byX = stride === 1 ? ordered : positions.slice().sort(([a], [b]) => a - b);
+      let crowding = 0;
+      let worstPair = 0;
+      for (let i = 0; i < byX.length; i++) {
+        const [x, y] = byX[i];
+        for (let j = i + 1; j < byX.length; j++) {
+          const [px, py] = byX[j];
+          if (px - x >= crowdingDistance) break;
+          const shortfall = Math.max(0, 1 - Math.hypot(px - x, py - y) / crowdingDistance);
+          crowding += shortfall ** 2;
+          worstPair = Math.max(worstPair, shortfall);
+        }
+      }
+      return total / samples.length + .45 * Math.sqrt(worst) + .48 * linePenalty
+        + .24 * aligned / Math.max(1, triples) + .25 * (worstPair ** 2 + crowding / count);
     }
 
     function evaluate(candidate) {
@@ -894,18 +928,14 @@
       fits++;
       const [dx, dy] = fabricOffset(geometry, fabricWidth, fabricHeight);
       const cost = score(positions.map(([x, y]) => [x + dx, y + dy]));
-      if (leaders.length < 8 || cost < leaders.at(-1).cost) {
-        leaders.push({ candidate, cost });
-        leaders.sort((a, b) => a.cost - b.cost);
-        if (leaders.length > 8) leaders.pop();
-      }
+      const result = { candidate, cost };
+      if (!best || cost < best.cost) best = result;
+      return result;
     }
 
     const random = Math.random;
-    function propose() {
-      const parent = leaders.length && random() < .7
-        ? leaders[Math.floor(random() * leaders.length)].candidate : null;
-      const vary = (value, radius) => value + (random() * 2 - 1) * radius;
+    function propose(parent, stepScale = 1) {
+      const vary = (value, radius) => value + (random() * 2 - 1) * radius * stepScale;
       const width = Math.min(fabricWidth, Math.max(.001, parent
         ? vary(parent.width, fabricWidth * .12)
         : fabricWidth * (1 - random() ** 2 * .8)));
@@ -917,22 +947,58 @@
       const diagonalLead = Math.min(pitch, Math.max(0, parent
         ? vary(parent.diagonalLead, pitch * .15) : random() ** 2 * pitch));
       const continuation = Object.fromEntries(fallbackFields.map(field => [
-        field, parent && random() < .85 ? Boolean(parent.continuation[field]) : random() < .25
+        field, parent && random() >= .15 * stepScale ? Boolean(parent.continuation[field]) : random() < .25
       ]));
       return { pitch, count, width, gap, offset, turn, diagonalLead, continuation };
     }
 
     let reportAt = 0;
-    while (checked < limit) {
-      evaluate(checked === 0 ? { ...initial, continuation: { ...initial.continuation, retryRoute: false } } : propose());
+    function trial(candidate) {
+      const result = evaluate(candidate);
       checked++;
       const now = performance.now();
       if (now >= reportAt) {
-        postMessage({ checked, fits, best: leaders[0], progress: checked / limit });
+        postMessage({ checked, fits, best, progress: checked / limit });
         reportAt = now + 300;
       }
+      return result;
     }
-    postMessage({ checked, fits, best: leaders[0], progress: 1, done: true });
+
+    function nearby(a, b) {
+      return Math.abs(a.width - b.width) <= .04 * fabricWidth
+        && Math.abs(Math.log(a.gap / b.gap)) <= .16
+        && Math.abs(a.offset - b.offset) <= .12 * Math.min(pitch, fabricWidth)
+        && (turn !== 'diagonal' || (Math.abs(a.diagonalLead - b.diagonalLead) <= .08 * pitch
+          && fallbackFields.every(field => Boolean(a.continuation[field]) === Boolean(b.continuation[field]))));
+    }
+
+    const initialResult = trial({ ...initial, continuation: { ...initial.continuation, retryRoute: false } });
+    let starts = initialResult ? [initialResult] : [];
+    while (checked < limit) {
+      const discoveries = [];
+      for (let sample = 0; sample < 16 && checked < limit; sample++) {
+        const result = trial(propose());
+        if (result) discoveries.push(result);
+      }
+      discoveries.sort((a, b) => a.cost - b.cost);
+      for (const result of discoveries) {
+        if (starts.length === 8) break;
+        if (!starts.some(start => nearby(start.candidate, result.candidate))) starts.push(result);
+      }
+      // Each new start gets the same first-round budget before competing for more.
+      for (const [budget, stepScale, survivors] of [[4, 1, 4], [6, .45, 2], [8, .18, 0]]) {
+        starts = starts.map(start => {
+          for (let attempt = 0; attempt < budget && checked < limit; attempt++) {
+            const result = trial(propose(start.candidate, stepScale));
+            if (result && result.cost < start.cost) start = result;
+          }
+          return start;
+        }).sort((a, b) => a.cost - b.cost).slice(0, survivors);
+      }
+      // Revisit the global best alongside fresh starts in the next batch.
+      starts = best ? [best] : [];
+    }
+    postMessage({ checked, fits, best, progress: 1, done: true });
   }
 
   const optimize = document.querySelector('#optimize-controls');

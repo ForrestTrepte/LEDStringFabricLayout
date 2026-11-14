@@ -57,7 +57,7 @@ window.ledLayoutPresets = [
     }
   },
   {
-    "name": "Optimize Scattered 2.0 height",
+    "name": "Optimize Scattered 2.5 height",
     "settings": {
       "pitch": "4",
       "width": "6.5",
@@ -78,7 +78,7 @@ window.ledLayoutPresets = [
     }
   },
   {
-    "name": "Optimize Scattered 2.5 height",
+    "name": "Optimize Scattered 2.0 height",
     "settings": {
       "pitch": "4",
       "width": "6.5",

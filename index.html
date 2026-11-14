@@ -162,6 +162,8 @@
     <form id="controls">
       <label>LED spacing (in) <input name="pitch" type="number" min=".001" step="any" value="2" required></label>
       <label>Number of LEDs <input name="count" type="number" min="1" max="20000" step="1" value="103" required></label>
+      <label>Fabric width (in) <input name="fabricWidth" type="number" min=".001" step="any" value="6.5" required></label>
+      <label>Fabric height (in) <input name="fabricHeight" type="number" min=".001" step="any" value="2.5" required></label>
       <hr>
       <label>Row width (in) <input name="width" type="number" min=".001" step="any" value="23" required></label>
       <label>Row spacing (in) <input name="gap" type="number" min=".001" step="any" value="3" required></label>
@@ -202,14 +204,12 @@
       </section>
       <form id="optimize-controls" aria-labelledby="optimize-heading">
         <h2 id="optimize-heading">Optimize<br />Scattered Coverage</h2>
-        <label>Fabric width (in) <input name="fabricWidth" type="number" min=".001" step="any" value="6.5"
-            required></label>
-        <label>Fabric height (in) <input name="fabricHeight" type="number" min=".001" step="any" value="2.5"
-            required></label>
+        <label>Number of samples <input name="samples" type="number" min="1" max="9007199254740991" step="1" value="1000000" required></label>
+        <p>Uses the current LED spacing and count.</p>
         <button type="submit">Run optimization</button>
         <button id="optimize-cancel" type="button" disabled>Cancel</button>
         <progress id="optimize-progress" aria-label="Optimization progress" max="1" value="0"></progress>
-        <p id="optimize-status" role="status">Uses the current LED spacing and count.</p>
+        <p id="optimize-status" role="status"></p>
         <button id="optimize-preview" type="button" disabled>Preview best layout</button>
         <button id="optimize-apply" type="button" disabled>Apply best layout</button>
       </form>
@@ -463,13 +463,18 @@
     };
   }
 
-  function render(candidate, fabric = candidate) {
+  function fabricOffset(geometry, fabricWidth, fabricHeight) {
+    return [(fabricWidth - (geometry.right - geometry.left)) / 2 - geometry.left,
+      (fabricHeight - geometry.bottom) / 2];
+  }
+
+  function render(candidate) {
     preview.replaceChildren();
     download.disabled = true;
     const input = controls.elements;
-    const diagonal = input.turn.value === 'diagonal';
-    diagonalLeadControl.hidden = !diagonal;
-    input.diagonalLead.disabled = !diagonal;
+    const diagonal = (candidate?.turn ?? input.turn.value) === 'diagonal';
+    diagonalLeadControl.hidden = input.turn.value !== 'diagonal';
+    input.diagonalLead.disabled = diagonalLeadControl.hidden;
     if (!candidate && !controls.checkValidity()) {
       summary.textContent = 'Enter valid dimensions and a whole LED count between 1 and 20,000.';
       return;
@@ -490,58 +495,45 @@
     const { path, fallbackPath, pointAt, positions, left, right, bottom, stopReason, failedStep } = geometry;
     const placed = positions?.length ?? count;
     const length = offset + (placed - 1) * pitch;
-    const previewRight = Math.max(right, fabric?.fabricWidth ?? width);
-    const previewBottom = Math.max(bottom, fabric?.fabricHeight ?? 0);
-    const span = Math.max(previewRight - left, previewBottom, .05);
+    const fabricWidth = input.fabricWidth.valueAsNumber;
+    const fabricHeight = input.fabricHeight.valueAsNumber;
+    const [dx, dy] = fabricOffset(geometry, fabricWidth, fabricHeight);
+    const span = Math.max(right - left, bottom, fabricWidth, fabricHeight, .05);
     const padding = Math.max(span * .06, .05);
-    const x = left - padding;
-    const y = -padding;
-    const w = previewRight - left + 2 * padding;
-    const h = previewBottom + 2 * padding;
+    const x = Math.min(0, left + dx) - padding;
+    const y = Math.min(0, dy) - padding;
+    const w = Math.max(fabricWidth, right + dx) - x + padding;
+    const h = Math.max(fabricHeight, bottom + dy) - y + padding;
     const dot = Math.min(pitch * .18, gap * .2, span * .011);
     const fontSize = span * .018;
     preview.setAttribute('viewBox', [x, y, w, h].join(' '));
-    add(preview, 'rect', { x, y, width: w, height: h, fill: '#0d171f' });
+    add(preview, 'rect', { x: 0, y: 0, width: fabricWidth, height: fabricHeight, fill: '#0d171f' });
 
-    const gridStep = Math.max(1, 10 ** Math.ceil(Math.log10(Math.max(w, h) / 100)));
+    const gridStep = Math.max(1, 10 ** Math.ceil(Math.log10(Math.max(fabricWidth, fabricHeight) / 100)));
     if (input.grid.checked) {
       const grid = add(preview, 'g', { stroke: '#354b58', 'stroke-width': span * .001 });
-      for (let i = Math.ceil(x / gridStep); i <= Math.floor((x + w) / gridStep); i++) {
-        add(grid, 'line', { x1: i * gridStep, y1: y, x2: i * gridStep, y2: y + h });
+      for (let i = 1; i < fabricWidth / gridStep; i++) {
+        add(grid, 'line', { x1: i * gridStep, y1: 0, x2: i * gridStep, y2: fabricHeight });
       }
-      for (let i = Math.ceil(y / gridStep); i <= Math.floor((y + h) / gridStep); i++) {
-        add(grid, 'line', { x1: x, y1: i * gridStep, x2: x + w, y2: i * gridStep });
+      for (let i = 1; i < fabricHeight / gridStep; i++) {
+        add(grid, 'line', { x1: 0, y1: i * gridStep, x2: fabricWidth, y2: i * gridStep });
       }
     }
-    if (fabric) {
-      add(preview, 'rect', {
-        x: 0, y: 0, width: fabric.fabricWidth, height: fabric.fabricHeight,
-        fill: 'none', stroke: '#d8ad70', 'stroke-width': 1.5,
-        'stroke-dasharray': '5 4', 'vector-effect': 'non-scaling-stroke'
-      });
-    }
-    const edges = fabric ? (width < fabric.fabricWidth ? [width] : []) : [0, width];
-    for (const edge of edges) {
-      add(preview, 'line', {
-        x1: edge, x2: edge, y1: y, y2: y + h,
-        stroke: '#d8ad70', 'stroke-width': 1.5, 'stroke-dasharray': '5 4',
-        'vector-effect': 'non-scaling-stroke'
-      });
-    }
+    const route = add(preview, 'g', { transform: `translate(${dx} ${dy})` });
     if (input.wire.checked) {
       const wireStyle = { fill: 'none', 'stroke-width': span * .0025, 'stroke-linejoin': 'round' };
-      add(preview, 'path', { ...wireStyle, d: path, stroke: '#78a3b4' });
-      if (fallbackPath) add(preview, 'path', { ...wireStyle, d: fallbackPath, stroke: '#ffe066' });
+      add(route, 'path', { ...wireStyle, d: path, stroke: '#78a3b4' });
+      if (fallbackPath) add(route, 'path', { ...wireStyle, d: fallbackPath, stroke: '#ffe066' });
     }
     if (failedStep) {
-      add(preview, 'path', {
+      add(route, 'path', {
         d: failedStep.path, fill: 'none', stroke: '#ff6464',
         'stroke-width': span * .0025, 'stroke-linejoin': 'round'
       });
-      add(preview, 'circle', { cx: failedStep.x, cy: failedStep.y, r: dot, fill: '#ff6464' });
+      add(route, 'circle', { cx: failedStep.x, cy: failedStep.y, r: dot, fill: '#ff6464' });
     }
-    const leds = add(preview, 'g', { fill: '#9ff3df' });
-    const labels = input.labels.checked && add(preview, 'g', {
+    const leds = add(route, 'g', { fill: '#9ff3df' });
+    const labels = input.labels.checked && add(route, 'g', {
       fill: '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
     });
     for (let index = 0; index < placed; index++) {
@@ -555,6 +547,7 @@
         : `${placed.toLocaleString('en-US')} of ${count.toLocaleString('en-US')} LEDs placed. ${stopReason ?? 'The next row is out of reach with these settings.'}`,
       `${inches.format(length / 12)} ft of wire`,
       `${inches.format(right - left)} × ${inches.format(bottom)} in wire footprint`,
+      ...(right - left > fabricWidth || bottom > fabricHeight ? ['Wire footprint exceeds the fabric'] : []),
       ...(input.grid.checked ? [`${gridStep} in grid`] : [])
     ].join(' · ');
     download.disabled = false;
@@ -586,9 +579,7 @@
     };
   }
 
-  function searchLayouts(initial, fabricWidth, fabricHeight) {
-    const limit = 16000;
-    const deadline = performance.now() + 115000;
+  function searchLayouts(initial, fabricWidth, fabricHeight, limit) {
     const scale = Math.max(fabricWidth, fabricHeight);
     const samples = [];
     for (let row = 0; row < 12; row++) {
@@ -648,11 +639,12 @@
       const geometry = turn === 'diagonal'
         ? diagonalLayout(width, gap, pitch, offset, count, diagonalLead, continuation)
         : layout(width, gap, length, turn === 'round');
-      if (!geometry || geometry.left < 0 || geometry.right > fabricWidth || geometry.bottom > fabricHeight) return;
+      if (!geometry || geometry.right - geometry.left > fabricWidth || geometry.bottom > fabricHeight) return;
       const positions = geometry.positions ?? Array.from({ length: count }, (_, index) => geometry.pointAt(offset + index * pitch));
       if (positions.length !== count) return;
       fits++;
-      const cost = score(positions);
+      const [dx, dy] = fabricOffset(geometry, fabricWidth, fabricHeight);
+      const cost = score(positions.map(([x, y]) => [x + dx, y + dy]));
       if (leaders.length < 8 || cost < leaders.at(-1).cost) {
         leaders.push({ candidate, cost });
         leaders.sort((a, b) => a.cost - b.cost);
@@ -683,17 +675,17 @@
       return { pitch, count, width, gap, offset, turn, diagonalLead, continuation };
     }
 
-    evaluate({ ...initial, continuation: { ...initial.continuation, retryRoute: false } });
     let reportAt = 0;
-    while (++checked <= limit && performance.now() < deadline) {
-      evaluate(propose());
+    while (checked < limit) {
+      evaluate(checked === 0 ? { ...initial, continuation: { ...initial.continuation, retryRoute: false } } : propose());
+      checked++;
       const now = performance.now();
       if (now >= reportAt) {
-        postMessage({ checked, fits, best: leaders[0], progress: Math.max(checked / limit, 1 - (deadline - now) / 115000) });
+        postMessage({ checked, fits, best: leaders[0], progress: checked / limit });
         reportAt = now + 300;
       }
     }
-    postMessage({ checked: checked - 1, fits, best: leaders[0], progress: 1, done: true });
+    postMessage({ checked, fits, best: leaders[0], progress: 1, done: true });
   }
 
   const optimize = document.querySelector('#optimize-controls');
@@ -720,7 +712,7 @@
     previewOptimization.disabled = true;
     applyOptimization.disabled = true;
     optimizeProgress.value = 0;
-    optimizeStatus.textContent = 'Uses the current LED spacing and count.';
+    optimizeStatus.textContent = '';
     if (showingBest) toggleBestPreview(false);
   }
 
@@ -732,12 +724,13 @@
 
   optimize.addEventListener('submit', event => {
     event.preventDefault();
-    if (!controls.elements.pitch.reportValidity() || !controls.elements.count.reportValidity()) return;
+    const input = controls.elements;
+    if (!['pitch', 'count', 'fabricWidth', 'fabricHeight'].every(field => input[field].reportValidity())) return;
     clearOptimization();
     const initial = readLayout();
-    const { fabricWidth, fabricHeight } = optimize.elements;
-    const dimensions = [fabricWidth.valueAsNumber, fabricHeight.valueAsNumber];
-    const source = `${layout.toString()}\n${diagonalLayout.toString()}\n${searchLayouts.toString()}\n`
+    const dimensions = [input.fabricWidth.valueAsNumber, input.fabricHeight.valueAsNumber];
+    const samples = optimize.elements.samples.valueAsNumber;
+    const source = `${layout.toString()}\n${diagonalLayout.toString()}\n${fabricOffset.toString()}\n${searchLayouts.toString()}\n`
       + 'onmessage = ({ data }) => searchLayouts(...data);';
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
     try {
@@ -755,12 +748,12 @@
       const { checked, fits, best, progress, done } = data;
       optimizeProgress.value = progress;
       if (best) {
-        bestLayout = { ...best.candidate, fabricWidth: dimensions[0], fabricHeight: dimensions[1] };
+        bestLayout = best.candidate;
         previewOptimization.disabled = false;
         applyOptimization.disabled = false;
         if (showingBest) render(bestLayout);
       }
-      const results = `${checked.toLocaleString()} tried · ${fits.toLocaleString()} fit`;
+      const results = `${checked.toLocaleString()} of ${samples.toLocaleString()} tried · ${fits.toLocaleString()} fit`;
       optimizeStatus.textContent = best ? `${results} · Best cost ${best.cost.toFixed(3)} (lower is better)`
         : `${results}${done ? ' · No complete layout found.' : ''}`;
       if (done) stopOptimization();
@@ -769,7 +762,7 @@
       stopOptimization();
       optimizeStatus.textContent = 'The background search stopped unexpectedly.';
     };
-    worker.postMessage([initial, ...dimensions]);
+    worker.postMessage([initial, ...dimensions, samples]);
   });
 
   cancelOptimization.addEventListener('click', () => {
@@ -784,7 +777,7 @@
     presetList.value = '';
     showingBest = false;
     previewOptimization.textContent = 'Preview best layout';
-    render(undefined, bestLayout);
+    render();
   });
   optimize.addEventListener('input', clearOptimization);
 
@@ -831,7 +824,9 @@
 
   controls.addEventListener('input', event => {
     presetList.value = '';
-    if (event.target === controls.elements.pitch || event.target === controls.elements.count) clearOptimization();
+    if (['pitch', 'count', 'fabricWidth', 'fabricHeight'].some(field => event.target === controls.elements[field])) {
+      clearOptimization();
+    }
     if (showingBest) toggleBestPreview(false);
     else render();
   });

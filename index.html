@@ -29,7 +29,7 @@
       <label>LED spacing (in) <input name="pitch" type="number" min=".001" step="any" value="2" required></label>
       <label>Straight row width (in) <input name="width" type="number" min=".001" step="any" value="23" required></label>
       <label>Row spacing (in) <input name="gap" type="number" min=".001" step="any" value="3" required></label>
-      <label>Number of rows <input name="rows" type="number" min="1" max="500" step="1" value="8" required></label>
+      <label>Number of LEDs <input name="count" type="number" min="1" max="20000" step="1" value="103" required></label>
       <label>First LED offset (in) <input name="offset" type="number" min="0" step="any" value="0" required></label>
       <label>Turns <select name="turn"><option value="sharp">Sharp corners</option><option value="round">Rounded U-turns</option></select></label>
       <p>Rounded turns extend half the row spacing beyond each straight row end where the wire turns.</p>
@@ -60,22 +60,15 @@
     return node;
   }
 
-  function layout(width, gap, rows, rounded) {
+  function layout(width, gap, length, rounded) {
     const radius = gap / 2;
     const turnLength = rounded ? Math.PI * radius : gap;
-    let path = 'M 0 0';
-    for (let row = 0; row < rows; row++) {
-      const right = row % 2 === 0;
-      const end = right ? width : 0;
-      path += ' H ' + end;
-      if (row === rows - 1) break;
-      const nextY = (row + 1) * gap;
-      path += rounded ? ` A ${radius} ${radius} 0 0 ${right ? 1 : 0} ${end} ${nextY}` : ' V ' + nextY;
-    }
+    const stride = width + turnLength;
+    const lastRow = Math.floor(length / stride);
+    if (!Number.isFinite(stride) || lastRow >= 20000) return null;
 
     function pointAt(distance) {
-      const stride = width + turnLength;
-      const row = Math.min(rows - 1, Math.floor(distance / stride));
+      const row = Math.floor(distance / stride);
       const along = distance - row * stride;
       const right = row % 2 === 0;
       const y = row * gap;
@@ -87,13 +80,30 @@
       return [end + (right ? 1 : -1) * radius * Math.sin(angle), y + radius * (1 - Math.cos(angle))];
     }
 
-    return {
-      path, pointAt,
-      length: rows * width + (rows - 1) * turnLength,
-      left: rounded && rows > 2 ? -radius : 0,
-      right: width + (rounded && rows > 1 ? radius : 0),
-      bottom: (rows - 1) * gap
-    };
+    let path = 'M 0 0';
+    let left = 0;
+    let right = Math.min(length, width);
+    const [lastX, bottom] = pointAt(length);
+    for (let row = 0; row <= lastRow; row++) {
+      const goesRight = row % 2 === 0;
+      const end = goesRight ? width : 0;
+      const remaining = length - row * stride;
+      if (remaining <= width) {
+        path += ' H ' + lastX;
+        break;
+      }
+      path += ' H ' + end;
+      const [turnX, turnY] = row === lastRow ? [lastX, bottom] : [end, (row + 1) * gap];
+      if (rounded) {
+        path += ` A ${radius} ${radius} 0 0 ${goesRight ? 1 : 0} ${turnX} ${turnY}`;
+        const reach = radius * Math.sin(Math.min(Math.PI / 2, (remaining - width) / radius));
+        if (goesRight) right = Math.max(right, width + reach);
+        else left = Math.min(left, -reach);
+      } else {
+        path += ' V ' + turnY;
+      }
+    }
+    return { path, pointAt, left, right, bottom };
   }
 
   function render() {
@@ -101,21 +111,22 @@
     download.disabled = true;
     const input = controls.elements;
     if (!controls.checkValidity()) {
-      summary.textContent = 'Enter positive dimensions and a whole row count between 1 and 500.';
+      summary.textContent = 'Enter valid dimensions and a whole LED count between 1 and 20,000.';
       return;
     }
-    const { path, pointAt, length, left, right, bottom } = layout(
-      input.width.valueAsNumber, input.gap.valueAsNumber, input.rows.valueAsNumber, input.turn.value === 'round'
-    );
+    const count = input.count.valueAsNumber;
     const pitch = input.pitch.valueAsNumber;
     const offset = input.offset.valueAsNumber;
-    const tolerance = Math.min(pitch * 1e-8, length * Number.EPSILON * 8);
-    const count = Math.max(0, Math.floor((length - offset + tolerance) / pitch) + 1);
-    if (!Number.isFinite(length) || count > 20000) {
-      summary.textContent = 'Reduce the layout size or increase LED spacing to plot up to 20,000 LEDs.';
+    const length = offset + (count - 1) * pitch;
+    const geometry = Number.isFinite(length) && layout(
+      input.width.valueAsNumber, input.gap.valueAsNumber, length, input.turn.value === 'round'
+    );
+    if (!geometry) {
+      summary.textContent = 'The wire path is too long to draw. Reduce the LED count, spacing, or first LED offset.';
       return;
     }
-    const span = Math.max(right - left, bottom);
+    const { path, pointAt, left, right, bottom } = geometry;
+    const span = Math.max(right - left, bottom, .05);
     const padding = Math.max(span * .06, .05);
     const x = left - padding;
     const y = -padding;
@@ -144,7 +155,7 @@
       fill: '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
     });
     for (let index = 0; index < count; index++) {
-      const [cx, cy] = pointAt(Math.min(length, offset + index * pitch));
+      const [cx, cy] = pointAt(offset + index * pitch);
       add(leds, 'circle', { cx, cy, r: dot });
       if (labels) add(labels, 'text', { x: cx, y: cy - dot - fontSize * .25 }).textContent = index + 1;
     }

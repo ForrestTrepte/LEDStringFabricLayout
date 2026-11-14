@@ -299,9 +299,7 @@
     presetList.value = selected;
   }
 
-  presetList.addEventListener('change', () => {
-    const name = presetList.value;
-    if (!presets.has(name)) return;
+  function applyPreset(name) {
     const settings = presets.get(name);
     for (const field of presetFields) {
       const control = controls.elements[field];
@@ -309,6 +307,12 @@
       else control.value = settings[field];
     }
     presetName.value = name;
+  }
+
+  presetList.addEventListener('change', () => {
+    const name = presetList.value;
+    if (!presets.has(name)) return;
+    applyPreset(name);
     render();
   });
 
@@ -357,7 +361,9 @@
     svg.setAttribute('height', height + 'in');
     downloadFile(new XMLSerializer().serializeToString(svg), 'image/svg+xml', 'led-fabric-layout.svg');
   });
-  updatePresetList();
+  const firstPreset = presets.keys().next().value;
+  updatePresetList(firstPreset);
+  if (presets.size) applyPreset(firstPreset);
   render();
 </script>
 

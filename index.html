@@ -105,6 +105,13 @@
     accent-color: #79e2ce
   }
 
+  .dimension-stepper { display: flex; align-items: end; gap: 4px }
+  .dimension-stepper label { flex: 1; min-width: 0 }
+  .dimension-stepper input { min-width: 0; appearance: textfield }
+  .dimension-stepper input::-webkit-inner-spin-button,
+  .dimension-stepper input::-webkit-outer-spin-button { appearance: none; margin: 0 }
+  .dimension-stepper button { padding: 8px; line-height: normal }
+
   button {
     background: #9ff3df;
     color: #102a26;
@@ -837,6 +844,33 @@
     downloadFile(new XMLSerializer().serializeToString(svg), 'image/svg+xml', 'led-fabric-layout.svg');
   });
   const firstPreset = presets.keys().next().value;
+  for (const input of document.querySelectorAll('input[type="number"][step="any"]')) {
+    const label = input.closest('label');
+    const name = label.textContent.trim();
+    const stepper = document.createElement('div');
+    stepper.className = 'dimension-stepper';
+    label.insertAdjacentElement('afterend', stepper);
+    stepper.append(label);
+    const adjust = direction => {
+      const min = Number(input.min);
+      const value = Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : min;
+      input.value = String(Math.max(min, Number((value + direction * .1).toPrecision(15))));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      adjust(event.key === 'ArrowUp' ? 1 : -1);
+    });
+    for (const [symbol, direction, action] of [['−', -1, 'Decrease'], ['+', 1, 'Increase']]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = symbol;
+      button.setAttribute('aria-label', `${action} ${name} by 0.1 inches`);
+      button.addEventListener('click', () => adjust(direction));
+      stepper.append(button);
+    }
+  }
   updatePresetList(firstPreset);
   if (presets.size) applyPreset(firstPreset);
   render();

@@ -402,8 +402,11 @@
       right = Math.max(right, x);
     }
     let stopReason;
+    let failedStep;
     if (placed.length < count) {
-      const { x, direction } = placed.at(-1);
+      const { x, y, direction } = placed.at(-1);
+      const nextX = x + direction * pitch;
+      failedStep = { x: nextX, y, path: `M ${x} ${y} H ${nextX}` };
       if (retries > 10000) stopReason = 'The search reached its retry limit.';
       else if (!fits(x + direction * lead) && !options.adjustLead && !options.reverseLead) {
         stopReason = 'The diagonal lead-in extends past the fabric edge.';
@@ -413,7 +416,7 @@
     }
     return {
       path: path.join(' '), fallbackPath: fallbackPath.join(' '), positions,
-      left: 0, right, bottom: placed.at(-1).y, stopReason
+      left: 0, right, bottom: placed.at(-1).y, stopReason, failedStep
     };
   }
 
@@ -447,7 +450,7 @@
       summary.textContent = 'The wire path is too long to draw. Reduce the LED count, spacing, or first LED offset.';
       return;
     }
-    const { path, fallbackPath, pointAt, positions, left, right, bottom, stopReason } = geometry;
+    const { path, fallbackPath, pointAt, positions, left, right, bottom, stopReason, failedStep } = geometry;
     const placed = positions?.length ?? count;
     const length = offset + (placed - 1) * pitch;
     const previewRight = Math.max(right, width);
@@ -484,14 +487,20 @@
       add(preview, 'path', { ...wireStyle, d: path, stroke: '#78a3b4' });
       if (fallbackPath) add(preview, 'path', { ...wireStyle, d: fallbackPath, stroke: '#ffe066' });
     }
+    if (failedStep) {
+      add(preview, 'path', {
+        d: failedStep.path, fill: 'none', stroke: '#ff6464',
+        'stroke-width': span * .0025, 'stroke-linejoin': 'round'
+      });
+      add(preview, 'circle', { cx: failedStep.x, cy: failedStep.y, r: dot, fill: '#ff6464' });
+    }
     const leds = add(preview, 'g', { fill: '#9ff3df' });
     const labels = input.labels.checked && add(preview, 'g', {
       fill: '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
     });
     for (let index = 0; index < placed; index++) {
       const [cx, cy] = positions ? positions[index] : pointAt(offset + index * pitch);
-      const stoppedHere = placed < count && index === placed - 1;
-      add(leds, 'circle', { cx, cy, r: dot, ...(stoppedHere ? { fill: '#ff6464' } : {}) });
+      add(leds, 'circle', { cx, cy, r: dot });
       if (labels) add(labels, 'text', { x: cx, y: cy - dot - fontSize * .25 }).textContent = index + 1;
     }
     summary.textContent = [

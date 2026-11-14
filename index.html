@@ -140,14 +140,32 @@
   svg {
     display: block;
     width: 100%;
-    height: clamp(260px, 60vh, 650px);
+    height: clamp(220px, 46vh, 500px);
     border-radius: 8px
   }
 
-  .cylinder-preview { display: grid; gap: 10px; margin-top: 18px }
-  .cylinder-preview h2 { margin: 0; font-size: 1.1rem }
-  .cylinder-preview canvas { display: block; width: 100%; height: clamp(220px, 38vh, 420px); border-radius: 8px }
+  .cylinder-preview {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px
+  }
+  .cylinder-controls { display: grid; flex: none; gap: 8px }
+  .cylinder-preview h2 { margin: 0; font-size: 1.1rem; white-space: nowrap }
+  .cylinder-preview canvas {
+    --cylinder-height: clamp(170px, 29vh, 300px);
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    width: calc(var(--cylinder-height) * var(--cylinder-width-ratio, 1) + 8px);
+    height: var(--cylinder-height);
+    border-radius: 8px
+  }
   .cylinder-preview button { justify-self: start }
+  @media (max-width: 420px) {
+    .cylinder-preview { flex-wrap: wrap }
+  }
 
   @media (max-width: 950px) {
     .layout {
@@ -198,9 +216,11 @@
       <p id="summary" role="status"></p>
       <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Serpentine LED layout"></svg>
       <div class="cylinder-preview">
-        <h2>Wrapped fabric</h2>
+        <div class="cylinder-controls">
+          <h2>Wrapped fabric</h2>
+          <button id="rotate-cylinder" type="button">Pause rotation</button>
+        </div>
         <canvas id="cylinder" role="img" aria-label="Cylinder showing LEDs wrapped around the fabric"></canvas>
-        <button id="rotate-cylinder" type="button">Pause rotation</button>
       </div>
     </section>
     <div class="sidebar">
@@ -270,7 +290,8 @@
     const { width, height, leds } = wrappedLayout;
     const radius = width / (2 * Math.PI);
     const tilt = .32;
-    const scale = Math.min(clientWidth * .82 / (2 * radius), clientHeight * .79 / (height + 2 * radius * tilt));
+    const availableWidth = Math.max(1, clientWidth - 8);
+    const scale = Math.min(availableWidth / (2 * radius), clientHeight * .79 / (height + 2 * radius * tilt));
     const rx = radius * scale;
     const ry = rx * tilt;
     const cx = clientWidth / 2;
@@ -668,6 +689,8 @@
       }
     }
     wrappedLayout = { width: fabricWidth, height: fabricHeight, leds: wrappedLEDs };
+    const diameter = fabricWidth / Math.PI;
+    cylinder.style.setProperty('--cylinder-width-ratio', .79 * diameter / (fabricHeight + .32 * diameter));
     refreshCylinder();
     summary.textContent = [
       placed === count

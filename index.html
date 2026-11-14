@@ -70,14 +70,33 @@
     border-radius: 6px
   }
 
-  #preset-controls {
+  .sidebar,
+  #preset-controls,
+  #optimize-controls {
     display: grid;
     gap: 8px;
     min-width: 0;
     overflow-wrap: anywhere
   }
 
-  #preset-heading {
+  .sidebar {
+    gap: 18px
+  }
+
+  #controls hr {
+    width: 100%;
+    margin: 0;
+    border: 0;
+    border-top: 1px solid #354651
+  }
+
+  #optimize-progress {
+    width: 100%;
+    accent-color: #79e2ce
+  }
+
+  #preset-heading,
+  #optimize-heading {
     margin: 0 0 4px;
     font-size: 1.1rem
   }
@@ -135,9 +154,10 @@
   <div class="layout">
     <form id="controls">
       <label>LED spacing (in) <input name="pitch" type="number" min=".001" step="any" value="2" required></label>
+      <label>Number of LEDs <input name="count" type="number" min="1" max="20000" step="1" value="103" required></label>
+      <hr>
       <label>Row width (in) <input name="width" type="number" min=".001" step="any" value="23" required></label>
       <label>Row spacing (in) <input name="gap" type="number" min=".001" step="any" value="3" required></label>
-      <label>Number of LEDs <input name="count" type="number" min="1" max="20000" step="1" value="103" required></label>
       <label>First LED offset (in) <input name="offset" type="number" min="0" step="any" value="0" required></label>
       <label>Turns <select name="turn">
           <option value="sharp">Sharp corners</option>
@@ -145,7 +165,8 @@
           <option value="diagonal">Diagonal LED-to-LED</option>
         </select></label>
       <div id="diagonal-lead-control" hidden>
-        <label>Diagonal lead-in (in) <input name="diagonalLead" type="number" min="0" step="any" value="0" required disabled></label>
+        <label>Diagonal lead-in (in) <input name="diagonalLead" type="number" min="0" step="any" value="0" required
+            disabled></label>
         <label><input name="adjustLead" type="checkbox"> Adjust lead-in to fit</label>
         <label><input name="reverseLead" type="checkbox"> Try lead-in in either direction</label>
         <label><input name="skipRows" type="checkbox"> Skip rows if needed</label>
@@ -163,14 +184,29 @@
       <p id="summary" role="status"></p>
       <svg id="preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Serpentine LED layout"></svg>
     </section>
-    <section id="preset-controls" aria-labelledby="preset-heading">
-      <h2 id="preset-heading">Presets</h2>
-      <label>Saved layout <select id="preset-list"></select></label>
-      <label>Preset name <input id="preset-name" type="text" maxlength="80"></label>
-      <button id="save-preset" type="button">Save preset</button>
-      <button id="export-presets" type="button">Download preset library</button>
-      <p id="preset-status" role="status">Save the downloaded presets.js beside index.html to keep your presets.</p>
-    </section>
+    <div class="sidebar">
+      <section id="preset-controls" aria-labelledby="preset-heading">
+        <h2 id="preset-heading">Presets</h2>
+        <label>Saved layout <select id="preset-list"></select></label>
+        <label>Preset name <input id="preset-name" type="text" maxlength="80"></label>
+        <button id="save-preset" type="button">Save preset</button>
+        <button id="export-presets" type="button">Download preset library</button>
+        <p id="preset-status" role="status">Save the downloaded presets.js beside index.html to keep your presets.</p>
+      </section>
+      <form id="optimize-controls" aria-labelledby="optimize-heading">
+        <h2 id="optimize-heading">Optimize<br />Scattered Coverage</h2>
+        <label>Fabric width (in) <input name="fabricWidth" type="number" min=".001" step="any" value="6.5"
+            required></label>
+        <label>Fabric height (in) <input name="fabricHeight" type="number" min=".001" step="any" value="2.5"
+            required></label>
+        <button type="submit">Run optimization</button>
+        <button id="optimize-cancel" type="button" disabled>Cancel</button>
+        <progress id="optimize-progress" aria-label="Optimization progress" max="1" value="0"></progress>
+        <p id="optimize-status" role="status">Uses the current LED spacing and count.</p>
+        <button id="optimize-preview" type="button" disabled>Preview best layout</button>
+        <button id="optimize-apply" type="button" disabled>Apply best layout</button>
+      </form>
+    </div>
   </div>
 </main>
 <script src="./presets.js"></script>
@@ -420,31 +456,25 @@
     };
   }
 
-  function render() {
+  function render(candidate, fabric = candidate) {
     preview.replaceChildren();
     download.disabled = true;
     const input = controls.elements;
     const diagonal = input.turn.value === 'diagonal';
     diagonalLeadControl.hidden = !diagonal;
     input.diagonalLead.disabled = !diagonal;
-    if (!controls.checkValidity()) {
+    if (!candidate && !controls.checkValidity()) {
       summary.textContent = 'Enter valid dimensions and a whole LED count between 1 and 20,000.';
       return;
     }
-    const count = input.count.valueAsNumber;
-    const pitch = input.pitch.valueAsNumber;
-    const offset = input.offset.valueAsNumber;
-    const width = input.width.valueAsNumber;
-    const gap = input.gap.valueAsNumber;
-    const turn = input.turn.value;
+    const { count, pitch, offset, width, gap, turn, diagonalLead, continuation } = candidate ?? readLayout();
     if (diagonal && offset > width) {
       summary.textContent = 'For diagonal turns, the first LED offset must fit within the first row.';
       return;
     }
     const requestedLength = offset + (count - 1) * pitch;
-    const continuation = Object.fromEntries(continuationFields.map(field => [field, input[field].checked]));
     const geometry = Number.isFinite(requestedLength) && (diagonal
-      ? diagonalLayout(width, gap, pitch, offset, count, input.diagonalLead.valueAsNumber, continuation)
+      ? diagonalLayout(width, gap, pitch, offset, count, diagonalLead, continuation)
       : layout(width, gap, requestedLength, turn === 'round'));
     if (!geometry) {
       summary.textContent = 'The wire path is too long to draw. Reduce the LED count, spacing, or first LED offset.';
@@ -453,14 +483,15 @@
     const { path, fallbackPath, pointAt, positions, left, right, bottom, stopReason, failedStep } = geometry;
     const placed = positions?.length ?? count;
     const length = offset + (placed - 1) * pitch;
-    const previewRight = Math.max(right, width);
-    const span = Math.max(previewRight - left, bottom, .05);
+    const previewRight = Math.max(right, fabric?.fabricWidth ?? width);
+    const previewBottom = Math.max(bottom, fabric?.fabricHeight ?? 0);
+    const span = Math.max(previewRight - left, previewBottom, .05);
     const padding = Math.max(span * .06, .05);
     const x = left - padding;
     const y = -padding;
     const w = previewRight - left + 2 * padding;
-    const h = bottom + 2 * padding;
-    const dot = Math.min(pitch * .18, input.gap.valueAsNumber * .2, span * .011);
+    const h = previewBottom + 2 * padding;
+    const dot = Math.min(pitch * .18, gap * .2, span * .011);
     const fontSize = span * .018;
     preview.setAttribute('viewBox', [x, y, w, h].join(' '));
     add(preview, 'rect', { x, y, width: w, height: h, fill: '#0d171f' });
@@ -475,7 +506,15 @@
         add(grid, 'line', { x1: x, y1: i * gridStep, x2: x + w, y2: i * gridStep });
       }
     }
-    for (const edge of [0, width]) {
+    if (fabric) {
+      add(preview, 'rect', {
+        x: 0, y: 0, width: fabric.fabricWidth, height: fabric.fabricHeight,
+        fill: 'none', stroke: '#d8ad70', 'stroke-width': 1.5,
+        'stroke-dasharray': '5 4', 'vector-effect': 'non-scaling-stroke'
+      });
+    }
+    const edges = fabric ? (width < fabric.fabricWidth ? [width] : []) : [0, width];
+    for (const edge of edges) {
       add(preview, 'line', {
         x1: edge, x2: edge, y1: y, y2: y + h,
         stroke: '#d8ad70', 'stroke-width': 1.5, 'stroke-dasharray': '5 4',
@@ -530,10 +569,223 @@
     presetName.value = name;
   }
 
+  function readLayout() {
+    const input = controls.elements;
+    const settings = Object.fromEntries(['pitch', 'count', 'width', 'gap', 'offset', 'diagonalLead']
+      .map(field => [field, input[field].valueAsNumber]));
+    return {
+      ...settings, turn: input.turn.value,
+      continuation: Object.fromEntries(continuationFields.map(field => [field, input[field].checked]))
+    };
+  }
+
+  function searchLayouts(initial, fabricWidth, fabricHeight) {
+    const limit = 16000;
+    const deadline = performance.now() + 115000;
+    const scale = Math.max(fabricWidth, fabricHeight);
+    const samples = [];
+    for (let row = 0; row < 12; row++) {
+      for (let col = 0; col < 12; col++) {
+        samples.push([fabricWidth * (col / 11), fabricHeight * (row / 11)]);
+      }
+    }
+    const fallbackFields = ['adjustLead', 'reverseLead', 'skipRows', 'reduceGap', 'extraBend'];
+    const leaders = [];
+    const { pitch, count } = initial;
+    let checked = 0;
+    let fits = 0;
+
+    function score(positions) {
+      let total = 0;
+      let worst = 0;
+      for (const [x, y] of samples) {
+        let nearest = Infinity;
+        for (const [px, py] of positions) {
+          const dx = (x - px) / scale;
+          const dy = (y - py) / scale;
+          nearest = Math.min(nearest, dx * dx + dy * dy);
+        }
+        total += Math.sqrt(nearest);
+        worst = Math.max(worst, nearest);
+      }
+      // Count nearly straight triples among a bounded sample of LEDs.
+      const stride = Math.max(1, Math.ceil(count / 40));
+      const alignmentTolerance = Math.min(pitch, scale) / scale * .035;
+      let triples = 0;
+      let aligned = 0;
+      for (let i = 0; i < count; i += stride) {
+        const [x, y] = positions[i];
+        for (let j = i + stride; j < count; j += stride) {
+          const [px, py] = positions[j];
+          const dx = (px - x) / scale;
+          const dy = (py - y) / scale;
+          const distance = Math.hypot(dx, dy);
+          if (distance === 0) continue;
+          for (let k = j + stride; k < count; k += stride) {
+            const [qx, qy] = positions[k];
+            const cross = dx * ((qy - y) / scale) - dy * ((qx - x) / scale);
+            triples++;
+            if (Math.abs(cross) <= distance * alignmentTolerance) aligned++;
+          }
+        }
+      }
+      return total / samples.length + .45 * Math.sqrt(worst) + .12 * aligned / Math.max(1, triples);
+    }
+
+    function evaluate(candidate) {
+      const { width, gap, offset, turn, diagonalLead, continuation } = candidate;
+      if (!Number.isFinite(width) || width > fabricWidth || width < .001 || gap < .001 ||
+        !Number.isFinite(gap) || offset < 0 || (turn === 'diagonal' && !(diagonalLead >= 0))) return;
+      const length = offset + (count - 1) * pitch;
+      if (!Number.isFinite(length) || (turn === 'diagonal' && offset > width)) return;
+      const geometry = turn === 'diagonal'
+        ? diagonalLayout(width, gap, pitch, offset, count, diagonalLead, continuation)
+        : layout(width, gap, length, turn === 'round');
+      if (!geometry || geometry.left < 0 || geometry.right > fabricWidth || geometry.bottom > fabricHeight) return;
+      const positions = geometry.positions ?? Array.from({ length: count }, (_, index) => geometry.pointAt(offset + index * pitch));
+      if (positions.length !== count) return;
+      fits++;
+      const cost = score(positions);
+      if (leaders.length < 8 || cost < leaders.at(-1).cost) {
+        leaders.push({ candidate, cost });
+        leaders.sort((a, b) => a.cost - b.cost);
+        if (leaders.length > 8) leaders.pop();
+      }
+    }
+
+    const modes = ['sharp', 'round', 'diagonal', 'diagonal'];
+    const random = Math.random;
+    function propose() {
+      const parent = leaders.length && random() < .7
+        ? leaders[Math.floor(random() * leaders.length)].candidate : null;
+      const vary = (value, radius) => value + (random() * 2 - 1) * radius;
+      const width = Math.min(fabricWidth, Math.max(.001, parent
+        ? vary(parent.width, fabricWidth * .12)
+        : fabricWidth * (1 - random() ** 2 * .8)));
+      const rows = Math.max(1, count / Math.max(1, 1 + width / pitch) - 1);
+      const gap = Math.max(.001, parent
+        ? vary(parent.gap, Math.min(fabricHeight, parent.gap) * .4)
+        : (fabricHeight / rows) * (.15 + random() * 1.5));
+      const turn = parent && random() < .9 ? parent.turn : modes[Math.floor(random() * modes.length)];
+      const offset = Math.min(width, Math.max(0, parent ? vary(parent.offset, pitch * .25) : random() * Math.min(width, pitch)));
+      const diagonalLead = Math.min(pitch, Math.max(0, parent
+        ? vary(parent.diagonalLead, pitch * .15) : random() ** 2 * pitch));
+      const continuation = Object.fromEntries(fallbackFields.map(field => [
+        field, parent && random() < .85 ? Boolean(parent.continuation[field]) : random() < .25
+      ]));
+      return { pitch, count, width, gap, offset, turn, diagonalLead, continuation };
+    }
+
+    evaluate({ ...initial, continuation: { ...initial.continuation, retryRoute: false } });
+    let reportAt = 0;
+    while (++checked <= limit && performance.now() < deadline) {
+      evaluate(propose());
+      const now = performance.now();
+      if (now >= reportAt) {
+        postMessage({ checked, fits, best: leaders[0], progress: Math.max(checked / limit, 1 - (deadline - now) / 115000) });
+        reportAt = now + 300;
+      }
+    }
+    postMessage({ checked: checked - 1, fits, best: leaders[0], progress: 1, done: true });
+  }
+
+  const optimize = document.querySelector('#optimize-controls');
+  const optimizeStatus = document.querySelector('#optimize-status');
+  const optimizeProgress = document.querySelector('#optimize-progress');
+  const cancelOptimization = document.querySelector('#optimize-cancel');
+  const previewOptimization = document.querySelector('#optimize-preview');
+  const applyOptimization = document.querySelector('#optimize-apply');
+  const runOptimization = optimize.querySelector('button[type="submit"]');
+  let worker;
+  let bestLayout;
+  let showingBest = false;
+
+  function stopOptimization() {
+    worker?.terminate();
+    worker = undefined;
+    runOptimization.disabled = false;
+    cancelOptimization.disabled = true;
+  }
+
+  function clearOptimization() {
+    stopOptimization();
+    bestLayout = undefined;
+    previewOptimization.disabled = true;
+    applyOptimization.disabled = true;
+    optimizeProgress.value = 0;
+    optimizeStatus.textContent = 'Uses the current LED spacing and count.';
+    if (showingBest) toggleBestPreview(false);
+  }
+
+  function toggleBestPreview(show) {
+    showingBest = show;
+    previewOptimization.textContent = show ? 'Return to current layout' : 'Preview best layout';
+    render(show ? bestLayout : undefined);
+  }
+
+  optimize.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!controls.elements.pitch.reportValidity() || !controls.elements.count.reportValidity()) return;
+    clearOptimization();
+    const initial = readLayout();
+    const { fabricWidth, fabricHeight } = optimize.elements;
+    const dimensions = [fabricWidth.valueAsNumber, fabricHeight.valueAsNumber];
+    const source = `${layout.toString()}\n${diagonalLayout.toString()}\n${searchLayouts.toString()}\n`
+      + 'onmessage = ({ data }) => searchLayouts(...data);';
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    try {
+      worker = new Worker(url);
+    } catch {
+      optimizeStatus.textContent = 'This browser could not start the background search.';
+      return;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+    runOptimization.disabled = true;
+    cancelOptimization.disabled = false;
+    optimizeStatus.textContent = 'Searching for layouts…';
+    worker.onmessage = ({ data }) => {
+      const { checked, fits, best, progress, done } = data;
+      optimizeProgress.value = progress;
+      if (best) {
+        bestLayout = { ...best.candidate, fabricWidth: dimensions[0], fabricHeight: dimensions[1] };
+        previewOptimization.disabled = false;
+        applyOptimization.disabled = false;
+        if (showingBest) render(bestLayout);
+      }
+      const results = `${checked.toLocaleString()} tried · ${fits.toLocaleString()} fit`;
+      optimizeStatus.textContent = best ? `${results} · Best cost ${best.cost.toFixed(3)} (lower is better)`
+        : `${results}${done ? ' · No complete layout found.' : ''}`;
+      if (done) stopOptimization();
+    };
+    worker.onerror = () => {
+      stopOptimization();
+      optimizeStatus.textContent = 'The background search stopped unexpectedly.';
+    };
+    worker.postMessage([initial, ...dimensions]);
+  });
+
+  cancelOptimization.addEventListener('click', () => {
+    stopOptimization();
+    optimizeStatus.textContent += ' · Search canceled.';
+  });
+  previewOptimization.addEventListener('click', () => toggleBestPreview(!showingBest));
+  applyOptimization.addEventListener('click', () => {
+    const input = controls.elements;
+    for (const field of ['width', 'gap', 'offset', 'turn', 'diagonalLead']) input[field].value = bestLayout[field];
+    for (const field of continuationFields) input[field].checked = bestLayout.continuation[field] ?? false;
+    presetList.value = '';
+    showingBest = false;
+    previewOptimization.textContent = 'Preview best layout';
+    render(undefined, bestLayout);
+  });
+  optimize.addEventListener('input', clearOptimization);
+
   presetList.addEventListener('change', () => {
     const name = presetList.value;
     if (!presets.has(name)) return;
     applyPreset(name);
+    clearOptimization();
     render();
   });
 
@@ -570,9 +822,11 @@
     presetStatus.textContent = 'Replace presets.js beside index.html with the downloaded file.';
   });
 
-  controls.addEventListener('input', () => {
+  controls.addEventListener('input', event => {
     presetList.value = '';
-    render();
+    if (event.target === controls.elements.pitch || event.target === controls.elements.count) clearOptimization();
+    if (showingBest) toggleBestPreview(false);
+    else render();
   });
   controls.addEventListener('submit', event => event.preventDefault());
   download.addEventListener('click', () => {

@@ -106,5 +106,59 @@ window.ledLayoutPresets = [
       "extraBend": false,
       "retryRoute": false
     }
+  },
+  {
+    "name": "Diamond",
+    "settings": {
+      "pitch": "4",
+      "width": "6.5",
+      "gap": "0.2135555835944799",
+      "count": "20",
+      "offset": "2.415223276930109",
+      "turn": "round",
+      "diagonalLead": "0.2513249438852103",
+      "adjustLead": false,
+      "reverseLead": false,
+      "skipRows": false,
+      "reduceGap": false,
+      "extraBend": false,
+      "retryRoute": false
+    }
+  },
+  {
+    "name": "Triangle Wave",
+    "settings": {
+      "pitch": "4",
+      "width": "6.5",
+      "gap": "0.2135555835944799",
+      "count": "20",
+      "offset": "2.415223276930109",
+      "turn": "round",
+      "diagonalLead": "0.2513249438852103",
+      "adjustLead": false,
+      "reverseLead": false,
+      "skipRows": false,
+      "reduceGap": false,
+      "extraBend": false,
+      "retryRoute": false
+    }
+  },
+  {
+    "name": "Fish x2",
+    "settings": {
+      "pitch": "4",
+      "width": "6.5",
+      "gap": "0.2135555835944799",
+      "count": "20",
+      "offset": "2.415223276930109",
+      "turn": "round",
+      "diagonalLead": "0.2513249438852103",
+      "adjustLead": false,
+      "reverseLead": false,
+      "skipRows": false,
+      "reduceGap": false,
+      "extraBend": false,
+      "retryRoute": false
+    }
   }
 ];

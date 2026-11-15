@@ -246,6 +246,8 @@
     font-size: .85rem
   }
   .optimize-weights input[type=number] { margin: 0; padding: 3px 6px }
+  #rank-controls label, #rank-controls p { margin-bottom: 8px }
+  #rank-slider { display: block; width: 100%; accent-color: #79e2ce }
 
   @media (max-width: 1010px) {
     .layout {
@@ -346,13 +348,28 @@
           <label>Coverage weight <input name="coverageWeight" type="number" min="0" step="any" value="1" required></label>
           <label>Alignment penalty weight <input name="alignmentWeight" type="number" min="0" step="any" value="1" required></label>
           <label>Close-pair penalty weight <input name="proximityWeight" type="number" min="0" step="any" value="1" required></label>
+          <label>Spectral peak weight <input name="spectralWeight" type="number" min="0" step="any" value="0" required></label>
+          <label>Triangle entropy weight <input name="triangleEntropyWeight" type="number" min="0" step="any" value="0" required></label>
         </div>
-        <p>Set a weight to 0 to ignore that term. Uses the current LED specs, fabric, and turn mode.</p>
+        <label><input name="wrappedScoring" type="checkbox"> Score wrapped surface</label>
+        <p>Samples layouts without refinement. Set a weight to 0 to omit its rank from the blend. Coverage always uses the flat fabric.</p>
         <button type="submit">Run optimization</button>
         <button id="optimize-cancel" type="button" disabled>Cancel</button>
         <progress id="optimize-progress" aria-label="Optimization progress" max="1" value="0"></progress>
         <p id="optimize-status" role="status"></p>
-        <button id="optimize-apply" type="button" disabled>Apply best layout</button>
+        <div id="rank-controls" hidden>
+          <label>Rank by <select id="rank-dimension">
+            <option value="combined">Weighted blend</option>
+            <option value="coverage">Coverage</option>
+            <option value="alignment">Avoid lines</option>
+            <option value="proximity">Avoid close pairs</option>
+            <option value="spectral">Avoid spectral peaks</option>
+            <option value="triangleEntropy">Delaunay triangle entropy</option>
+          </select></label>
+          <label>Worst to best <input id="rank-slider" type="range" min="0" max="0" value="0"></label>
+          <p id="rank-scores"></p>
+          <button id="optimize-apply" type="button">Apply displayed layout</button>
+        </div>
       </form>
     </div>
   </div>
@@ -849,7 +866,25 @@
     };
   }
 
-  function searchLayouts(initial, fabricWidth, fabricHeight, limit, weights) {
+  function blendRanks(ranks, weights) {
+    const terms = Object.keys(ranks);
+    const count = ranks[terms[0]].length;
+    const scores = new Float64Array(count);
+    const order = Uint32Array.from({ length: count }, (_, index) => index);
+    const maxWeight = Math.max(...terms.map(term => weights[term]));
+    if (maxWeight === 0) return { scores: scores.fill(.5), order };
+    const totalWeight = terms.reduce((sum, term) => sum + weights[term] / maxWeight, 0);
+    for (const term of terms) {
+      const factor = (weights[term] / maxWeight) / totalWeight;
+      if (factor === 0) continue;
+      const values = ranks[term];
+      for (let index = 0; index < count; index++) scores[index] += factor * values[index];
+    }
+    order.sort((a, b) => scores[a] - scores[b]);
+    return { scores, order };
+  }
+
+  function searchLayouts(initial, fabricWidth, fabricHeight, limit, weights, wrapped) {
     const scale = Math.max(fabricWidth, fabricHeight);
     const samples = [];
     for (let row = 0; row < 12; row++) {
@@ -859,10 +894,149 @@
     }
     const fallbackFields = ['adjustLead', 'reverseLead', 'skipRows', 'reduceGap', 'extraBend'];
     const { pitch, count, turn } = initial;
-    const crowdingDistance = Math.min(pitch, Math.sqrt(fabricWidth / count) * Math.sqrt(fabricHeight)) * .5;
-    let best;
+    const nominalSpacing = Math.sqrt(fabricWidth / count) * Math.sqrt(fabricHeight);
+    const crowdingDistance = Math.min(pitch, nominalSpacing) * .5;
+    const terms = ['coverage', 'alignment', 'proximity', 'spectral', 'triangleEntropy'];
+    const recordSize = 5 + terms.length;
+    const blockSize = 16384;
+    const records = [];
     let checked = 0;
     let fits = 0;
+
+    const frequencies = [];
+    const sinc = x => x === 0 ? 1 : Math.sin(x) / x;
+    const wrapDelta = dx => dx - fabricWidth * Math.round(dx / fabricWidth);
+    // Include whole-fabric modes, especially one to three cycles around the cylinder.
+    for (let vertical = 0; vertical <= 2; vertical++) {
+      for (let horizontal = vertical === 0 ? 1 : -3; horizontal <= 3; horizontal++) {
+        frequencies.push([2 * Math.PI * horizontal / fabricWidth, 2 * Math.PI * vertical / fabricHeight, 0]);
+      }
+    }
+    for (const spacing of [.75, 1, 1.5, 2]) {
+      const frequency = 2 * Math.PI / (nominalSpacing * spacing);
+      for (let direction = 0; direction < 12; direction++) {
+        const angle = direction * Math.PI / 12;
+        const flatX = frequency * Math.cos(angle);
+        const ky = frequency * Math.sin(angle);
+        const harmonic = Math.round(flatX * fabricWidth / (2 * Math.PI));
+        const kx = wrapped ? harmonic * (2 * Math.PI / fabricWidth) : flatX;
+        if (kx === 0 && ky === 0) continue;
+        // Remove the frequency response of a uniformly populated fabric rectangle.
+        const baseline = (wrapped && harmonic !== 0 ? 0 : sinc(kx * fabricWidth / 2)) * sinc(ky * fabricHeight / 2);
+        frequencies.push([kx, ky, baseline]);
+      }
+    }
+
+    function spectralPeak(positions) {
+      if (positions.length < 2) return 0;
+      let peak = 0;
+      for (const [kx, ky, baseline] of frequencies) {
+        let real = 0;
+        let imaginary = 0;
+        for (const [x, y] of positions) {
+          const phase = kx * (x - fabricWidth / 2) + ky * (y - fabricHeight / 2);
+          real += Math.cos(phase);
+          imaginary += Math.sin(phase);
+        }
+        peak = Math.max(peak, (real / positions.length - baseline) ** 2 + (imaginary / positions.length) ** 2);
+      }
+      return peak;
+    }
+
+    function triangleEntropy(positions) {
+      if (positions.length < 3) return 0;
+      const period = fabricWidth / scale;
+      const points = [];
+      const seen = new Set();
+      for (const [x, y] of positions) {
+        const nx = (wrapped ? x - fabricWidth * Math.floor(x / fabricWidth) : x) / scale;
+        const ny = y / scale;
+        const key = nx + ',' + ny;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const id = seen.size;
+        points.push([nx, ny, id]);
+        if (wrapped) points.push([nx - period, ny, id], [nx + period, ny, id]);
+      }
+      if (seen.size < 3) return 0;
+
+      // Incremental Delaunay triangulation. Each insertion retriangulates its circumcircle cavity.
+      const size = points.length;
+      points.push([-64, -32], [64, -32], [0, 64]);
+      function triangle(a, b, c) {
+        const [x, y] = points[a];
+        const ux = points[b][0] - x;
+        const uy = points[b][1] - y;
+        const vx = points[c][0] - x;
+        const vy = points[c][1] - y;
+        const cross = ux * vy - uy * vx;
+        if (Math.abs(cross) <= 8 * Number.EPSILON * (Math.abs(ux * vy) + Math.abs(uy * vx))) return;
+        const u2 = ux * ux + uy * uy;
+        const v2 = vx * vx + vy * vy;
+        const dx = (u2 * vy - v2 * uy) / (2 * cross);
+        const dy = (ux * v2 - vx * u2) / (2 * cross);
+        return { a, b, c, x: x + dx, y: y + dy, radius2: dx * dx + dy * dy,
+          area: Math.abs(cross) / 2, sides: [u2, v2, (ux - vx) ** 2 + (uy - vy) ** 2] };
+      }
+
+      let mesh = [triangle(size, size + 1, size + 2)];
+      for (let index = 0; index < size; index++) {
+        const [x, y] = points[index];
+        const boundary = new Map();
+        const kept = [];
+        for (const face of mesh) {
+          if ((x - face.x) ** 2 + (y - face.y) ** 2 > face.radius2 * (1 + 16 * Number.EPSILON)) {
+            kept.push(face);
+            continue;
+          }
+          for (const [a, b] of [[face.a, face.b], [face.b, face.c], [face.c, face.a]]) {
+            const key = a < b ? a * (size + 3) + b : b * (size + 3) + a;
+            if (!boundary.delete(key)) boundary.set(key, [a, b]);
+          }
+        }
+        for (const [a, b] of boundary.values()) {
+          const face = triangle(a, b, index);
+          if (face) kept.push(face);
+        }
+        mesh = kept;
+      }
+
+      const features = [];
+      const areaScale = (nominalSpacing / scale) ** 2;
+      for (const face of mesh) {
+        if (face.a >= size || face.b >= size || face.c >= size) continue;
+        if (wrapped && (face.x < 0 || face.x >= period)) continue;
+        const a = points[face.a][2];
+        const b = points[face.b][2];
+        const c = points[face.c][2];
+        if (a === b || b === c || a === c) continue;
+        const [short, middle, long] = face.sides.sort((a, b) => a - b);
+        features.push([face.area / areaScale, Math.sqrt(short / long), Math.sqrt(middle / long)]);
+      }
+      if (features.length < 2) return 0;
+
+      // Estimate size and joint shape entropy from Gaussian densities at the observed triangles.
+      // Fixed bandwidths keep the scores comparable across a run.
+      const areaDensity = new Float64Array(features.length).fill(1);
+      const shapeDensity = new Float64Array(features.length).fill(1);
+      for (let i = 0; i < features.length; i++) {
+        const [area, short, middle] = features[i];
+        for (let j = i + 1; j < features.length; j++) {
+          const [otherArea, otherShort, otherMiddle] = features[j];
+          const areaSimilarity = Math.exp(-.5 * ((area - otherArea) / .12) ** 2);
+          const shapeSimilarity = Math.exp(-.5 * (((short - otherShort) / .06) ** 2 + ((middle - otherMiddle) / .06) ** 2));
+          areaDensity[i] += areaSimilarity;
+          areaDensity[j] += areaSimilarity;
+          shapeDensity[i] += shapeSimilarity;
+          shapeDensity[j] += shapeSimilarity;
+        }
+      }
+      let entropy = 0;
+      for (let index = 0; index < features.length; index++) {
+        entropy -= Math.log(areaDensity[index] / features.length) + Math.log(shapeDensity[index] / features.length);
+      }
+      return entropy / features.length;
+    }
 
     function score(positions) {
       let total = 0;
@@ -877,29 +1051,45 @@
         total += Math.sqrt(nearest);
         worst = Math.max(worst, nearest);
       }
-      // Score both the longest visible line and the frequency of aligned triples.
+      // Score the longest line and the fraction of pair-defined line tests that hit another LED.
       const stride = Math.max(1, Math.ceil(count / 40));
       const ordered = [];
       for (let index = 0; index < count; index += stride) ordered.push(positions[index]);
-      ordered.sort(([ax, ay], [bx, by]) => ax - bx || ay - by);
       const alignmentTolerance = Math.min(pitch, scale) * .035;
       let triples = 0;
       let aligned = 0;
       let longestLine = 2;
+      const offsetBins = [new Map(), new Map()];
+      let repeatedOffsets = 0;
+      let testedOffsets = 0;
+      const binWidth = alignmentTolerance * 2;
       for (let i = 0; i < ordered.length; i++) {
         const [x, y] = ordered[i];
-        for (let j = i + 2; j < ordered.length; j++) {
+        for (let j = i + 1; j < ordered.length; j++) {
           const [px, py] = ordered[j];
-          const dx = px - x;
+          const dx = wrapped ? wrapDelta(px - x) : px - x;
           const dy = py - y;
           const distance = Math.hypot(dx, dy);
           if (distance <= alignmentTolerance) continue;
+          // Offsets are undirected. Two shifted grids reduce sensitivity to bin boundaries.
+          const sign = dy < 0 || (dy === 0 && dx < 0) ? -1 : 1;
+          for (const [index, bins] of offsetBins.entries()) {
+            const shift = index / 2;
+            const key = `${Math.floor(sign * dx / binWidth + shift)},${Math.floor(sign * dy / binWidth + shift)}`;
+            const previous = bins.get(key) ?? 0;
+            repeatedOffsets += previous;
+            bins.set(key, previous + 1);
+          }
+          testedOffsets++;
           const threshold = distance * alignmentTolerance;
           let lineSize = 2;
-          for (let k = i + 1; k < j; k++) {
+          for (let k = 0; k < ordered.length; k++) {
+            if (k === i || k === j) continue;
             const [qx, qy] = ordered[k];
+            const across = wrapped ? dx / 2 + wrapDelta(qx - x - dx / 2) : qx - x;
+            const area = Math.abs(dx * (qy - y) - dy * across);
             triples++;
-            if (Math.abs(dx * (qy - y) - dy * (qx - x)) <= threshold) {
+            if (area <= threshold) {
               aligned++;
               lineSize++;
             }
@@ -909,23 +1099,37 @@
       }
       const linePenalty = (longestLine - 2) / Math.max(4, ordered.length - 2);
       // Keep the closest pair visible even when its contribution to the average is small.
-      const byX = stride === 1 ? ordered : positions.slice().sort(([a], [b]) => a - b);
+      const byX = positions.slice().sort(([a], [b]) => a - b);
       let crowding = 0;
       let worstPair = 0;
+      function addPair(dx, dy) {
+        const shortfall = Math.max(0, 1 - Math.hypot(dx, dy) / crowdingDistance);
+        crowding += shortfall ** 2;
+        worstPair = Math.max(worstPair, shortfall);
+      }
       for (let i = 0; i < byX.length; i++) {
         const [x, y] = byX[i];
         for (let j = i + 1; j < byX.length; j++) {
           const [px, py] = byX[j];
           if (px - x >= crowdingDistance) break;
-          const shortfall = Math.max(0, 1 - Math.hypot(px - x, py - y) / crowdingDistance);
-          crowding += shortfall ** 2;
-          worstPair = Math.max(worstPair, shortfall);
+          addPair(wrapped ? wrapDelta(px - x) : px - x, py - y);
+        }
+        if (wrapped) {
+          for (let j = byX.length - 1; j > i; j--) {
+            const [px, py] = byX[j];
+            const dx = px - x;
+            if (fabricWidth - dx >= crowdingDistance || dx < crowdingDistance) break;
+            addPair(fabricWidth - dx, py - y);
+          }
         }
       }
       return {
         coverage: total / samples.length + .45 * Math.sqrt(worst),
-        alignment: .48 * linePenalty + .24 * aligned / Math.max(1, triples),
-        proximity: .25 * (worstPair ** 2 + crowding / count)
+        alignment: .48 * linePenalty + .24 * aligned / Math.max(1, triples)
+          + .6 * Math.sqrt(repeatedOffsets / Math.max(1, testedOffsets * (testedOffsets - 1))),
+        proximity: .25 * (worstPair ** 2 + crowding / count),
+        spectral: spectralPeak(ordered),
+        triangleEntropy: -triangleEntropy(positions)
       };
     }
 
@@ -941,81 +1145,72 @@
       if (!geometry || geometry.right - geometry.left > fabricWidth || geometry.bottom > fabricHeight) return;
       const positions = geometry.positions ?? Array.from({ length: count }, (_, index) => geometry.pointAt(offset + index * pitch));
       if (positions.length !== count) return;
-      fits++;
       const [dx, dy] = fabricOffset(geometry, fabricWidth, fabricHeight);
       const components = score(positions.map(([x, y]) => [x + dx, y + dy]));
-      const cost = Object.keys(components).reduce((sum, term) => sum + weights[term] * components[term], 0);
-      const result = { candidate, cost, components };
-      if (!best || cost < best.cost) best = result;
-      return result;
+      const offsetInBlock = (fits % blockSize) * recordSize;
+      if (offsetInBlock === 0) records.push(new Float64Array(blockSize * recordSize));
+      const mask = fallbackFields.reduce((bits, field, index) => bits | (Number(Boolean(continuation[field])) << index), 0);
+      records.at(-1).set([width, gap, offset, diagonalLead, mask,
+        ...terms.map(term => components[term])], offsetInBlock);
+      fits++;
     }
 
     const random = Math.random;
-    function propose(parent, stepScale = 1) {
-      const vary = (value, radius) => value + (random() * 2 - 1) * radius * stepScale;
-      const width = Math.min(fabricWidth, Math.max(.001, parent
-        ? vary(parent.width, fabricWidth * .12)
-        : fabricWidth * (1 - random() ** 2 * .8)));
+    function propose() {
+      const width = Math.max(.001, fabricWidth * (1 - random() ** 2 * .8));
       const rows = Math.max(1, count / Math.max(1, 1 + width / pitch) - 1);
-      const gap = Math.max(.001, parent
-        ? vary(parent.gap, Math.min(fabricHeight, parent.gap) * .4)
-        : (fabricHeight / rows) * (.15 + random() * 1.5));
-      const offset = Math.min(width, Math.max(0, parent ? vary(parent.offset, pitch * .25) : random() * Math.min(width, pitch)));
-      const diagonalLead = Math.min(pitch, Math.max(0, parent
-        ? vary(parent.diagonalLead, pitch * .15) : random() ** 2 * pitch));
-      const continuation = Object.fromEntries(fallbackFields.map(field => [
-        field, parent && random() >= .15 * stepScale ? Boolean(parent.continuation[field]) : random() < .25
-      ]));
+      const gap = Math.max(.001, (fabricHeight / rows) * (.15 + random() * 1.5));
+      const offset = random() * Math.min(width, pitch);
+      const diagonalLead = random() ** 2 * pitch;
+      const continuation = Object.fromEntries(fallbackFields.map(field => [field, random() < .25]));
       return { pitch, count, width, gap, offset, turn, diagonalLead, continuation };
     }
 
     let reportAt = 0;
-    function trial(candidate) {
-      const result = evaluate(candidate);
+    while (checked < limit) {
+      evaluate(checked === 0 ? { ...initial, continuation: { ...initial.continuation, retryRoute: false } } : propose());
       checked++;
       const now = performance.now();
       if (now >= reportAt) {
-        postMessage({ checked, fits, best, progress: checked / limit });
+        postMessage({ checked, fits, progress: checked / limit });
         reportAt = now + 300;
       }
-      return result;
     }
+    if (!fits) {
+      postMessage({ checked, fits, progress: 1, done: true });
+      return;
+    }
+    postMessage({ checked, fits, progress: 1, ranking: true });
 
-    function nearby(a, b) {
-      return Math.abs(a.width - b.width) <= .04 * fabricWidth
-        && Math.abs(Math.log(a.gap / b.gap)) <= .16
-        && Math.abs(a.offset - b.offset) <= .12 * Math.min(pitch, fabricWidth)
-        && (turn !== 'diagonal' || (Math.abs(a.diagonalLead - b.diagonalLead) <= .08 * pitch
-          && fallbackFields.every(field => Boolean(a.continuation[field]) === Boolean(b.continuation[field]))));
+    const orders = {};
+    const ranks = {};
+    const ids = () => Uint32Array.from({ length: fits }, (_, index) => index);
+    for (const [column, term] of terms.entries()) {
+      const cost = index => records[Math.floor(index / blockSize)][(index % blockSize) * recordSize + 5 + column];
+      const order = ids().sort((a, b) => cost(b) - cost(a));
+      const rank = new Float64Array(fits);
+      for (let start = 0; start < fits;) {
+        let end = start + 1;
+        const value = cost(order[start]);
+        while (end < fits && cost(order[end]) === value) end++;
+        // Tie groups share the mean of the ranks they occupy.
+        const percentile = fits === 1 ? 1 : (start + end - 1) / (2 * (fits - 1));
+        for (let i = start; i < end; i++) {
+          const index = order[i];
+          rank[index] = percentile;
+        }
+        start = end;
+      }
+      orders[term] = order;
+      ranks[term] = rank;
     }
-
-    const initialResult = trial({ ...initial, continuation: { ...initial.continuation, retryRoute: false } });
-    let starts = initialResult ? [initialResult] : [];
-    while (checked < limit) {
-      const discoveries = [];
-      for (let sample = 0; sample < 16 && checked < limit; sample++) {
-        const result = trial(propose());
-        if (result) discoveries.push(result);
-      }
-      discoveries.sort((a, b) => a.cost - b.cost);
-      for (const result of discoveries) {
-        if (starts.length === 8) break;
-        if (!starts.some(start => nearby(start.candidate, result.candidate))) starts.push(result);
-      }
-      // Each new start gets the same first-round budget before competing for more.
-      for (const [budget, stepScale, survivors] of [[4, 1, 4], [6, .45, 2], [8, .18, 0]]) {
-        starts = starts.map(start => {
-          for (let attempt = 0; attempt < budget && checked < limit; attempt++) {
-            const result = trial(propose(start.candidate, stepScale));
-            if (result && result.cost < start.cost) start = result;
-          }
-          return start;
-        }).sort((a, b) => a.cost - b.cost).slice(0, survivors);
-      }
-      // Revisit the global best alongside fresh starts in the next batch.
-      starts = best ? [best] : [];
-    }
-    postMessage({ checked, fits, best, progress: 1, done: true });
+    const { scores, order } = blendRanks(ranks, weights);
+    orders.combined = order;
+    const buffers = [...records, ...Object.values(orders), scores].map(array => array.buffer);
+    postMessage({ checked, fits, progress: 1, done: true, results: {
+      orders, ranks: { ...ranks, combined: scores }, records, blockSize, recordSize, fallbackFields
+    } }, buffers);
+    return ranks;
   }
 
   const optimize = document.querySelector('#optimize-controls');
@@ -1023,32 +1218,75 @@
   const optimizeProgress = document.querySelector('#optimize-progress');
   const cancelOptimization = document.querySelector('#optimize-cancel');
   const applyOptimization = document.querySelector('#optimize-apply');
+  const rankControls = document.querySelector('#rank-controls');
+  const rankDimension = document.querySelector('#rank-dimension');
+  const rankSlider = document.querySelector('#rank-slider');
+  const rankScores = document.querySelector('#rank-scores');
   const runOptimization = optimize.querySelector('button[type="submit"]');
   let worker;
-  let bestLayout;
-  let showingBest = false;
+  let rankedLayouts;
+  let displayedLayout;
+  let blendTimer;
+  let blendRevision = 0;
 
-  function stopOptimization() {
-    worker?.terminate();
-    worker = undefined;
+  function finishSampling() {
     runOptimization.disabled = false;
     cancelOptimization.disabled = true;
   }
 
-  function clearOptimization() {
-    stopOptimization();
-    bestLayout = undefined;
-    applyOptimization.disabled = true;
-    optimizeProgress.value = 0;
-    optimizeStatus.textContent = '';
-    if (showingBest) toggleBestPreview(false);
+  function stopOptimization() {
+    clearTimeout(blendTimer);
+    blendRevision++;
+    worker?.terminate();
+    worker = undefined;
+    finishSampling();
   }
 
-  function toggleBestPreview(show) {
-    const next = show && Boolean(bestLayout);
-    if (showingBest === next) return;
-    showingBest = next;
-    render(next ? bestLayout : undefined);
+  function clearOptimization() {
+    stopOptimization();
+    rankedLayouts = undefined;
+    rankControls.hidden = true;
+    optimizeProgress.value = 0;
+    optimizeStatus.textContent = '';
+    if (displayedLayout) {
+      displayedLayout = undefined;
+      render();
+    }
+  }
+
+  function showRankedLayout() {
+    const { orders, ranks, records, blockSize, recordSize, fallbackFields, fixed } = rankedLayouts;
+    const order = orders[rankDimension.value];
+    const position = rankSlider.valueAsNumber;
+    const index = order[position];
+    const block = records[Math.floor(index / blockSize)];
+    const start = (index % blockSize) * recordSize;
+    const [width, gap, offset, diagonalLead, mask] = block.subarray(start, start + 5);
+    const continuation = Object.fromEntries(fallbackFields.map((field, bit) => [field, Boolean(mask & (1 << bit))]));
+    displayedLayout = { ...fixed, width, gap, offset, diagonalLead, continuation };
+    const terms = { coverage: 'Coverage', alignment: 'Avoid lines', proximity: 'Avoid close pairs',
+      spectral: 'Avoid spectral peaks', triangleEntropy: 'Triangle entropy', combined: 'Blend' };
+    const scores = Object.entries(terms).map(([term, label]) => `${label} ${ranks[term][index].toFixed(3)}`);
+    rankSlider.setAttribute('aria-valuetext', `${position + 1} of ${order.length}, score ${ranks[rankDimension.value][index].toFixed(3)}`);
+    const detail = rankDimension.value === 'triangleEntropy'
+      ? [inches.format(Math.abs(block[start + recordSize - 1])) + ' raw triangle entropy'] : [];
+    rankScores.textContent = [(position + 1).toLocaleString() + ' of ' + order.length.toLocaleString(), ...scores, ...detail].join(' · ');
+    applyOptimization.disabled = false;
+    render(displayedLayout);
+  }
+
+  function readWeights() {
+    return Object.fromEntries(['coverage', 'alignment', 'proximity', 'spectral', 'triangleEntropy']
+      .map(term => [term, optimize.elements[term + 'Weight'].valueAsNumber]));
+  }
+
+  function updateBlend() {
+    if (!rankedLayouts || !worker) return;
+    clearTimeout(blendTimer);
+    const revision = ++blendRevision;
+    const weights = readWeights();
+    if (!Object.values(weights).every(weight => Number.isFinite(weight) && weight >= 0)) return;
+    blendTimer = setTimeout(() => worker.postMessage({ weights, revision }), 120);
   }
 
   optimize.addEventListener('submit', event => {
@@ -1059,14 +1297,18 @@
     const initial = readLayout();
     const dimensions = [input.fabricWidth.valueAsNumber, input.fabricHeight.valueAsNumber];
     const samples = optimize.elements.samples.valueAsNumber;
-    const weights = Object.fromEntries(['coverage', 'alignment', 'proximity']
-      .map(term => [term, optimize.elements[term + 'Weight'].valueAsNumber]));
-    if (Object.values(weights).every(weight => weight === 0)) {
-      optimizeStatus.textContent = 'Set at least one weight above zero.';
-      return;
-    }
-    const source = `${layout.toString()}\n${diagonalLayout.toString()}\n${fabricOffset.toString()}\n${searchLayouts.toString()}\n`
-      + 'onmessage = ({ data }) => searchLayouts(...data);';
+    const weights = readWeights();
+    const source = `${layout.toString()}\n${diagonalLayout.toString()}\n${fabricOffset.toString()}\n`
+      + `${blendRanks.toString()}\n${searchLayouts.toString()}\n`
+      + `let ranks;
+        onmessage = ({ data }) => {
+          if (Array.isArray(data)) {
+            ranks = searchLayouts(...data);
+          } else {
+            const { scores, order } = blendRanks(ranks, data.weights);
+            postMessage({ blend: { scores, order }, revision: data.revision }, [scores.buffer, order.buffer]);
+          }
+        };`;
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
     try {
       worker = new Worker(url);
@@ -1080,46 +1322,61 @@
     cancelOptimization.disabled = false;
     optimizeStatus.textContent = 'Searching for layouts…';
     worker.onmessage = ({ data }) => {
-      const { checked, fits, best, progress, done } = data;
-      optimizeProgress.value = progress;
-      if (best) {
-        bestLayout = best.candidate;
-        applyOptimization.disabled = false;
-        if (showingBest) render(bestLayout);
+      if (data.blend) {
+        if (data.revision !== blendRevision) return;
+        rankedLayouts.orders.combined = data.blend.order;
+        rankedLayouts.ranks.combined = data.blend.scores;
+        if (displayedLayout || rankDimension.value === 'combined') showRankedLayout();
+        return;
       }
-      const results = `${checked.toLocaleString()} of ${samples.toLocaleString()} tried · ${fits.toLocaleString()} fit`;
-      const breakdown = best && Object.entries({ coverage: 'Coverage', alignment: 'Alignment', proximity: 'Close pairs' })
-        .map(([term, label]) => `${label} ${best.components[term].toFixed(3)} × ${weights[term]}`).join(' · ');
-      optimizeStatus.textContent = best ? `${results} · Best cost ${best.cost.toFixed(3)} (lower is better) · ${breakdown}`
-        : `${results}${done ? ' · No complete layout found.' : ''}`;
-      if (done) stopOptimization();
+      const { checked, fits, progress, done, ranking, results } = data;
+      optimizeProgress.value = progress;
+      const counts = `${checked.toLocaleString()} of ${samples.toLocaleString()} tried · ${fits.toLocaleString()} fit`;
+      optimizeStatus.textContent = counts + (ranking ? ' · Ranking layouts…'
+        : done && !results ? ' · No complete layout found.' : '');
+      if (results) {
+        const { pitch, count, turn } = initial;
+        rankedLayouts = { ...results, fixed: { pitch, count, turn } };
+        rankDimension.value = 'combined';
+        rankSlider.max = String(fits - 1);
+        rankSlider.value = rankSlider.max;
+        rankSlider.disabled = fits === 1;
+        rankControls.hidden = false;
+        showRankedLayout();
+        const currentWeights = readWeights();
+        if (Object.keys(weights).some(term => currentWeights[term] !== weights[term])) updateBlend();
+      }
+      if (done) {
+        if (results) finishSampling();
+        else stopOptimization();
+      }
     };
     worker.onerror = () => {
       stopOptimization();
       optimizeStatus.textContent = 'The background search stopped unexpectedly.';
     };
-    worker.postMessage([initial, ...dimensions, samples, weights]);
+    worker.postMessage([initial, ...dimensions, samples, weights, optimize.elements.wrappedScoring.checked]);
   });
 
   cancelOptimization.addEventListener('click', () => {
     stopOptimization();
     optimizeStatus.textContent += ' · Search canceled.';
   });
-  applyOptimization.addEventListener('mouseenter', () => toggleBestPreview(true));
-  applyOptimization.addEventListener('mouseleave', () => toggleBestPreview(applyOptimization.matches(':focus-visible')));
-  applyOptimization.addEventListener('focus', () => {
-    if (applyOptimization.matches(':focus-visible')) toggleBestPreview(true);
-  });
-  applyOptimization.addEventListener('blur', () => toggleBestPreview(applyOptimization.matches(':hover')));
+  rankSlider.addEventListener('input', showRankedLayout);
+  rankDimension.addEventListener('change', showRankedLayout);
   applyOptimization.addEventListener('click', () => {
     const input = controls.elements;
-    for (const field of ['width', 'gap', 'offset', 'diagonalLead']) input[field].value = bestLayout[field];
-    for (const field of continuationFields) input[field].checked = bestLayout.continuation[field] ?? false;
+    for (const field of ['width', 'gap', 'offset', 'diagonalLead']) input[field].value = displayedLayout[field];
+    for (const field of continuationFields) input[field].checked = displayedLayout.continuation[field] ?? false;
     presetList.value = '';
-    showingBest = false;
+    displayedLayout = undefined;
+    applyOptimization.disabled = true;
     render();
   });
-  optimize.addEventListener('input', clearOptimization);
+  optimize.addEventListener('input', event => {
+    if (event.target.name?.endsWith('Weight')) updateBlend();
+    else if (!rankControls.contains(event.target)) clearOptimization();
+  });
 
   presetList.addEventListener('change', () => {
     const name = presetList.value;
@@ -1169,8 +1426,11 @@
     if (['pitch', 'count', 'fabricWidth', 'fabricHeight', 'turn'].some(field => event.target === controls.elements[field])) {
       clearOptimization();
     }
-    if (showingBest) toggleBestPreview(false);
-    else render();
+    if (!['labels', 'wire', 'grid'].some(field => event.target === controls.elements[field])) {
+      displayedLayout = undefined;
+      applyOptimization.disabled = true;
+    }
+    render(displayedLayout);
   });
   controls.addEventListener('submit', event => event.preventDefault());
   download.addEventListener('click', () => {

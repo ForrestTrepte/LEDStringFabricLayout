@@ -237,7 +237,11 @@
     }
   }
 
-  .optimize-weights { display: grid; gap: 4px }
+  .optimize-weights {
+    display: grid;
+    gap: 4px
+  }
+
   .optimize-weights label {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 4.5rem;
@@ -245,9 +249,22 @@
     gap: 8px;
     font-size: .85rem
   }
-  .optimize-weights input[type=number] { margin: 0; padding: 3px 6px }
-  #rank-controls label, #rank-controls p { margin-bottom: 8px }
-  #rank-slider { display: block; width: 100%; accent-color: #79e2ce }
+
+  .optimize-weights input[type=number] {
+    margin: 0;
+    padding: 3px 6px
+  }
+
+  #rank-controls label,
+  #rank-controls p {
+    margin-bottom: 8px
+  }
+
+  #rank-slider {
+    display: block;
+    width: 100%;
+    accent-color: #79e2ce
+  }
 
   @media (max-width: 1010px) {
     .layout {
@@ -316,6 +333,7 @@
           <label><input name="labels" type="checkbox"> LED numbers</label>
           <label><input name="wire" type="checkbox" checked> Wire path</label>
           <label><input name="grid" type="checkbox" checked> Inch grid</label>
+          <label><input name="blackOnWhite" type="checkbox"> Black on white</label>
           <button id="export" type="button">Download SVG</button>
         </div>
       </div>
@@ -345,27 +363,33 @@
         <label>Number of samples <input name="samples" type="number" min="1" max="9007199254740991" step="1"
             value="1000000" required></label>
         <div class="optimize-weights">
-          <label>Coverage weight <input name="coverageWeight" type="number" min="0" step="any" value="1" required></label>
-          <label>Alignment penalty weight <input name="alignmentWeight" type="number" min="0" step="any" value="1" required></label>
-          <label>Close-pair penalty weight <input name="proximityWeight" type="number" min="0" step="any" value="1" required></label>
-          <label>Spectral peak weight <input name="spectralWeight" type="number" min="0" step="any" value="0" required></label>
-          <label>Triangle entropy weight <input name="triangleEntropyWeight" type="number" min="0" step="any" value="0" required></label>
+          <label>Coverage weight <input name="coverageWeight" type="number" min="0" step="any" value="1"
+              required></label>
+          <label>Alignment penalty weight <input name="alignmentWeight" type="number" min="0" step="any" value="1"
+              required></label>
+          <label>Close-pair penalty weight <input name="proximityWeight" type="number" min="0" step="any" value="1"
+              required></label>
+          <label>Spectral peak weight <input name="spectralWeight" type="number" min="0" step="any" value="0"
+              required></label>
+          <label>Triangle entropy weight <input name="triangleEntropyWeight" type="number" min="0" step="any" value="0"
+              required></label>
         </div>
         <label><input name="wrappedScoring" type="checkbox"> Score wrapped surface</label>
-        <p>Samples layouts without refinement. Set a weight to 0 to omit its rank from the blend. Coverage always uses the flat fabric.</p>
+        <p>Samples layouts without refinement. Set a weight to 0 to omit its rank from the blend. Coverage always uses
+          the flat fabric.</p>
         <button type="submit">Run optimization</button>
         <button id="optimize-cancel" type="button" disabled>Cancel</button>
         <progress id="optimize-progress" aria-label="Optimization progress" max="1" value="0"></progress>
         <p id="optimize-status" role="status"></p>
         <div id="rank-controls" hidden>
           <label>Rank by <select id="rank-dimension">
-            <option value="combined">Weighted blend</option>
-            <option value="coverage">Coverage</option>
-            <option value="alignment">Avoid lines</option>
-            <option value="proximity">Avoid close pairs</option>
-            <option value="spectral">Avoid spectral peaks</option>
-            <option value="triangleEntropy">Delaunay triangle entropy</option>
-          </select></label>
+              <option value="combined">Weighted blend</option>
+              <option value="coverage">Coverage</option>
+              <option value="alignment">Avoid lines</option>
+              <option value="proximity">Avoid close pairs</option>
+              <option value="spectral">Avoid spectral peaks</option>
+              <option value="triangleEntropy">Delaunay triangle entropy</option>
+            </select></label>
           <label>Worst to best <input id="rank-slider" type="range" min="0" max="0" value="0"></label>
           <p id="rank-scores"></p>
           <button id="optimize-apply" type="button">Apply displayed layout</button>
@@ -784,11 +808,15 @@
     const dot = Math.min(pitch * .18, gap * .2, span * .011);
     const fontSize = span * .018;
     preview.setAttribute('viewBox', [x, y, w, h].join(' '));
-    add(preview, 'rect', { x: 0, y: 0, width: fabricWidth, height: fabricHeight, fill: '#0d171f' });
+    const monochrome = input.blackOnWhite.checked;
+    if (monochrome) add(preview, 'rect', { x, y, width: w, height: h, fill: '#fff' });
+    add(preview, 'rect', {
+      x: 0, y: 0, width: fabricWidth, height: fabricHeight, fill: monochrome ? '#eaeaea' : '#0d171f'
+    });
 
     const gridStep = Math.max(1, 10 ** Math.ceil(Math.log10(Math.max(fabricWidth, fabricHeight) / 100)));
     if (input.grid.checked) {
-      const grid = add(preview, 'g', { stroke: '#354b58', 'stroke-width': span * .001 });
+      const grid = add(preview, 'g', { stroke: monochrome ? '#bdbdbd' : '#354b58', 'stroke-width': span * .001 });
       for (let i = 1; i < fabricWidth / gridStep; i++) {
         add(grid, 'line', { x1: i * gridStep, y1: 0, x2: i * gridStep, y2: fabricHeight });
       }
@@ -799,19 +827,20 @@
     const route = add(preview, 'g', { transform: `translate(${dx} ${dy})` });
     if (input.wire.checked) {
       const wireStyle = { fill: 'none', 'stroke-width': span * .0025, 'stroke-linejoin': 'round' };
-      add(route, 'path', { ...wireStyle, d: path, stroke: '#78a3b4' });
-      if (fallbackPath) add(route, 'path', { ...wireStyle, d: fallbackPath, stroke: '#ffe066' });
+      add(route, 'path', { ...wireStyle, d: path, stroke: monochrome ? '#000' : '#78a3b4' });
+      if (fallbackPath && !monochrome) add(route, 'path', { ...wireStyle, d: fallbackPath, stroke: '#ffe066' });
     }
     if (failedStep) {
+      const color = monochrome ? '#555' : '#ff6464';
       add(route, 'path', {
-        d: failedStep.path, fill: 'none', stroke: '#ff6464',
+        d: failedStep.path, fill: 'none', stroke: color,
         'stroke-width': span * .0025, 'stroke-linejoin': 'round'
       });
-      add(route, 'circle', { cx: failedStep.x, cy: failedStep.y, r: dot, fill: '#ff6464' });
+      add(route, 'circle', { cx: failedStep.x, cy: failedStep.y, r: dot, fill: color });
     }
-    const leds = add(route, 'g', { fill: '#9ff3df' });
+    const leds = add(route, 'g', { fill: monochrome ? '#000' : '#9ff3df' });
     const labels = input.labels.checked && add(route, 'g', {
-      fill: '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
+      fill: monochrome ? '#000' : '#edf4f6', 'font-size': fontSize, 'font-family': 'system-ui, sans-serif', 'text-anchor': 'middle'
     });
     const wrappedLEDs = [];
     for (let index = 0; index < placed; index++) {
@@ -975,8 +1004,10 @@
         const v2 = vx * vx + vy * vy;
         const dx = (u2 * vy - v2 * uy) / (2 * cross);
         const dy = (ux * v2 - vx * u2) / (2 * cross);
-        return { a, b, c, x: x + dx, y: y + dy, radius2: dx * dx + dy * dy,
-          area: Math.abs(cross) / 2, sides: [u2, v2, (ux - vx) ** 2 + (uy - vy) ** 2] };
+        return {
+          a, b, c, x: x + dx, y: y + dy, radius2: dx * dx + dy * dy,
+          area: Math.abs(cross) / 2, sides: [u2, v2, (ux - vx) ** 2 + (uy - vy) ** 2]
+        };
       }
 
       let mesh = [triangle(size, size + 1, size + 2)];
@@ -1207,9 +1238,11 @@
     const { scores, order } = blendRanks(ranks, weights);
     orders.combined = order;
     const buffers = [...records, ...Object.values(orders), scores].map(array => array.buffer);
-    postMessage({ checked, fits, progress: 1, done: true, results: {
-      orders, ranks: { ...ranks, combined: scores }, records, blockSize, recordSize, fallbackFields
-    } }, buffers);
+    postMessage({
+      checked, fits, progress: 1, done: true, results: {
+        orders, ranks: { ...ranks, combined: scores }, records, blockSize, recordSize, fallbackFields
+      }
+    }, buffers);
     return ranks;
   }
 
@@ -1264,8 +1297,10 @@
     const [width, gap, offset, diagonalLead, mask] = block.subarray(start, start + 5);
     const continuation = Object.fromEntries(fallbackFields.map((field, bit) => [field, Boolean(mask & (1 << bit))]));
     displayedLayout = { ...fixed, width, gap, offset, diagonalLead, continuation };
-    const terms = { coverage: 'Coverage', alignment: 'Avoid lines', proximity: 'Avoid close pairs',
-      spectral: 'Avoid spectral peaks', triangleEntropy: 'Triangle entropy', combined: 'Blend' };
+    const terms = {
+      coverage: 'Coverage', alignment: 'Avoid lines', proximity: 'Avoid close pairs',
+      spectral: 'Avoid spectral peaks', triangleEntropy: 'Triangle entropy', combined: 'Blend'
+    };
     const scores = Object.entries(terms).map(([term, label]) => `${label} ${ranks[term][index].toFixed(3)}`);
     rankSlider.setAttribute('aria-valuetext', `${position + 1} of ${order.length}, score ${ranks[rankDimension.value][index].toFixed(3)}`);
     const detail = rankDimension.value === 'triangleEntropy'
@@ -1426,7 +1461,7 @@
     if (['pitch', 'count', 'fabricWidth', 'fabricHeight', 'turn'].some(field => event.target === controls.elements[field])) {
       clearOptimization();
     }
-    if (!['labels', 'wire', 'grid'].some(field => event.target === controls.elements[field])) {
+    if (!['labels', 'wire', 'grid', 'blackOnWhite'].some(field => event.target === controls.elements[field])) {
       displayedLayout = undefined;
       applyOptimization.disabled = true;
     }

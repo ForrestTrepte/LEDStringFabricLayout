@@ -263,7 +263,31 @@
   #rank-slider {
     display: block;
     width: 100%;
-    accent-color: #79e2ce
+    appearance: none;
+    height: 6px;
+    margin: 14px 0;
+    border-radius: 3px;
+    background: #49616b;
+    --thumb-fill: #79e2ce
+  }
+
+  #rank-slider.modified { --thumb-fill: #15232d }
+  #rank-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border: 3px solid #79e2ce;
+    border-radius: 50%;
+    background: var(--thumb-fill);
+    cursor: pointer;
+  }
+  #rank-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: 3px solid #79e2ce;
+    border-radius: 50%;
+    background: var(--thumb-fill);
+    cursor: pointer;
   }
 
   @media (max-width: 1010px) {
@@ -365,13 +389,13 @@
         <div class="optimize-weights">
           <label>Coverage weight <input name="coverageWeight" type="number" min="0" step="any" value="1"
               required></label>
-          <label>Alignment penalty weight <input name="alignmentWeight" type="number" min="0" step="any" value="1"
+          <label>Alignment penalty weight <input name="alignmentWeight" type="number" min="0" step="any" value="0"
               required></label>
           <label>Close-pair penalty weight <input name="proximityWeight" type="number" min="0" step="any" value="1"
               required></label>
-          <label>Spectral peak weight <input name="spectralWeight" type="number" min="0" step="any" value="0"
+          <label>Spectral peak weight <input name="spectralWeight" type="number" min="0" step="any" value="1"
               required></label>
-          <label>Triangle entropy weight <input name="triangleEntropyWeight" type="number" min="0" step="any" value="0"
+          <label>Triangle entropy weight <input name="triangleEntropyWeight" type="number" min="0" step="any" value="1"
               required></label>
         </div>
         <label><input name="wrappedScoring" type="checkbox"> Score wrapped surface</label>
@@ -392,7 +416,7 @@
             </select></label>
           <label>Worst to best <input id="rank-slider" type="range" min="0" max="0" value="0"></label>
           <p id="rank-scores"></p>
-          <button id="optimize-apply" type="button">Apply displayed layout</button>
+          <p id="rank-state" role="status"></p>
         </div>
       </form>
     </div>
@@ -1250,7 +1274,7 @@
   const optimizeStatus = document.querySelector('#optimize-status');
   const optimizeProgress = document.querySelector('#optimize-progress');
   const cancelOptimization = document.querySelector('#optimize-cancel');
-  const applyOptimization = document.querySelector('#optimize-apply');
+  const rankState = document.querySelector('#rank-state');
   const rankControls = document.querySelector('#rank-controls');
   const rankDimension = document.querySelector('#rank-dimension');
   const rankSlider = document.querySelector('#rank-slider');
@@ -1281,13 +1305,22 @@
     rankControls.hidden = true;
     optimizeProgress.value = 0;
     optimizeStatus.textContent = '';
-    if (displayedLayout) {
-      displayedLayout = undefined;
-      render();
-    }
+    displayedLayout = undefined;
+    updateOptimizationState();
   }
 
-  function showRankedLayout() {
+  function updateOptimizationState() {
+    const active = readLayout();
+    const matches = displayedLayout && Object.entries(displayedLayout).every(([field, value]) => {
+      if (field === 'continuation') return continuationFields.every(name => active.continuation[name] === (value[name] ?? false));
+      if (field === 'fabricWidth' || field === 'fabricHeight') return controls.elements[field].valueAsNumber === value;
+      return active[field] === value;
+    });
+    rankSlider.classList.toggle('modified', !matches);
+    rankState.textContent = displayedLayout && !matches ? 'Settings modified · Move slider to resume' : '';
+  }
+
+  function showRankedLayout(apply = true) {
     const { orders, ranks, records, blockSize, recordSize, fallbackFields, fixed } = rankedLayouts;
     const order = orders[rankDimension.value];
     const position = rankSlider.valueAsNumber;
@@ -1306,8 +1339,15 @@
     const detail = rankDimension.value === 'triangleEntropy'
       ? [inches.format(Math.abs(block[start + recordSize - 1])) + ' raw triangle entropy'] : [];
     rankScores.textContent = [(position + 1).toLocaleString() + ' of ' + order.length.toLocaleString(), ...scores, ...detail].join(' · ');
-    applyOptimization.disabled = false;
-    render(displayedLayout);
+    if (apply) {
+      for (const [field, value] of Object.entries(displayedLayout)) {
+        if (field !== 'continuation') controls.elements[field].value = value;
+      }
+      for (const field of continuationFields) controls.elements[field].checked = continuation[field] ?? false;
+      presetList.value = '';
+      render();
+    }
+    updateOptimizationState();
   }
 
   function readWeights() {
@@ -1361,7 +1401,7 @@
         if (data.revision !== blendRevision) return;
         rankedLayouts.orders.combined = data.blend.order;
         rankedLayouts.ranks.combined = data.blend.scores;
-        if (displayedLayout || rankDimension.value === 'combined') showRankedLayout();
+        showRankedLayout();
         return;
       }
       const { checked, fits, progress, done, ranking, results } = data;
@@ -1371,11 +1411,11 @@
         : done && !results ? ' · No complete layout found.' : '');
       if (results) {
         const { pitch, count, turn } = initial;
-        rankedLayouts = { ...results, fixed: { pitch, count, turn } };
+        rankedLayouts = { ...results, fixed: { pitch, count, turn, fabricWidth: dimensions[0], fabricHeight: dimensions[1] } };
         rankDimension.value = 'combined';
         rankSlider.max = String(fits - 1);
         rankSlider.value = rankSlider.max;
-        rankSlider.disabled = fits === 1;
+        rankSlider.disabled = false;
         rankControls.hidden = false;
         showRankedLayout();
         const currentWeights = readWeights();
@@ -1397,27 +1437,19 @@
     stopOptimization();
     optimizeStatus.textContent += ' · Search canceled.';
   });
-  rankSlider.addEventListener('input', showRankedLayout);
-  rankDimension.addEventListener('change', showRankedLayout);
-  applyOptimization.addEventListener('click', () => {
-    const input = controls.elements;
-    for (const field of ['width', 'gap', 'offset', 'diagonalLead']) input[field].value = displayedLayout[field];
-    for (const field of continuationFields) input[field].checked = displayedLayout.continuation[field] ?? false;
-    presetList.value = '';
-    displayedLayout = undefined;
-    applyOptimization.disabled = true;
-    render();
-  });
+  rankSlider.addEventListener('input', () => showRankedLayout());
+  // Clicking also resumes when the range value stays unchanged.
+  rankSlider.addEventListener('click', () => showRankedLayout());
+  rankDimension.addEventListener('change', () => showRankedLayout());
   optimize.addEventListener('input', event => {
     if (event.target.name?.endsWith('Weight')) updateBlend();
-    else if (!rankControls.contains(event.target)) clearOptimization();
   });
 
   presetList.addEventListener('change', () => {
     const name = presetList.value;
     if (!presets.has(name)) return;
     applyPreset(name);
-    clearOptimization();
+    updateOptimizationState();
     render();
   });
 
@@ -1458,14 +1490,8 @@
 
   controls.addEventListener('input', event => {
     presetList.value = '';
-    if (['pitch', 'count', 'fabricWidth', 'fabricHeight', 'turn'].some(field => event.target === controls.elements[field])) {
-      clearOptimization();
-    }
-    if (!['labels', 'wire', 'grid', 'blackOnWhite'].some(field => event.target === controls.elements[field])) {
-      displayedLayout = undefined;
-      applyOptimization.disabled = true;
-    }
-    render(displayedLayout);
+    updateOptimizationState();
+    render();
   });
   controls.addEventListener('submit', event => event.preventDefault());
   download.addEventListener('click', () => {

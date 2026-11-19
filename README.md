@@ -16,3 +16,7 @@ Plan how to sew a fixed-spacing string of LEDs onto a piece of fabric. Preview w
 - Search for layouts that spread the LEDs across the fabric and reduce visible patterns.
 - Save and share named presets.
 - Export a full-size SVG, with a black-on-white view for printing.
+
+## Tests
+
+Run the interaction regression tests with Node.js: `node --test`.
